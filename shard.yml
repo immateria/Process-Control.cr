@@ -1,0 +1,4 @@
+name: process-control
+version: 0.1.0-preview.1
+crystal: ">= 1.21.0"
+license: MIT

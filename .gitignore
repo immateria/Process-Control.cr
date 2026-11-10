@@ -1,0 +1,9 @@
+/lib/
+/bin/
+/.crystal/
+/.workspace/
+/shard.lock
+/shard.override.yml
+*.dwarf
+*.o
+.DS_Store
