@@ -34,7 +34,7 @@ module ProcessControl
       child = wait_exit(deadline: deadline, cancel: cancel)
       return completion(child.state, child) unless child.state.completed?
       @streams.close_input
-      cut_at = drain.cut_after.try { |span| Time.instant + span }
+      cut_at = drain.cut_after.try { |span| Clock.now + span }
       loop do
         records = @streams.records
         if records.all?(&.settled)
@@ -48,7 +48,7 @@ module ProcessControl
                   end
           return completion(state, child)
         end
-        if cut_at && Time.instant >= cut_at
+        if cut_at && Clock.now >= cut_at
           @streams.cut_outputs
           cut_at = nil
         end

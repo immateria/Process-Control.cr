@@ -58,6 +58,7 @@ module ProcessControl::Control
 
     class Result
       getter state : State
+      @records : Array(Record)
 
       def initialize(records : Enumerable(Record))
         @records = records.to_a.dup

@@ -4,6 +4,8 @@ module ProcessControl
     getter cwd : String?
     getter environment : Spawn::Environment
     getter stdio : Stream::Stdio
+    @args : Array(String)
+    @extensions : Array(Spawn::Extension)
 
     def initialize(@executable : String, args : Enumerable(String) = [] of String,
                    @environment = Spawn::Environment.new, @cwd = nil, @stdio = Stream::Stdio.new,
@@ -46,7 +48,7 @@ module ProcessControl
              else
                search = environment["PATH"]? || ENV["PATH"]? || ""
                search.split(Process::PATH_DELIMITER).map { |entry| File.expand_path(File.join(entry, @executable), caller_directory) }
-                 .find { |candidate| File.file?(candidate) && File::Info.executable?(candidate) }
+                 .find { |candidate| Internal.executable?(candidate) }
              end
       raise Error::Missing.new("executable not found: #{@executable}") unless path
       Spawn::Plan.new(path, @args, environment, directory, @stdio, required, @extensions, group)

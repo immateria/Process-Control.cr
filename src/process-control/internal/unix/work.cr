@@ -208,7 +208,11 @@ module ProcessControl::Internal::Unix
       fd = LibC.fcntl(io.fd, command, 3)
       raise IO::Error.from_errno("fcntl(F_DUPFD_CLOEXEC)") if fd < 0
       begin
-        IO::FileDescriptor.set_blocking(fd, false)
+        flags = LibC.fcntl(fd, LibC::F_GETFL, 0)
+        raise IO::Error.from_errno("fcntl(F_GETFL)") if flags < 0
+        if LibC.fcntl(fd, LibC::F_SETFL, flags | LibC::O_NONBLOCK) < 0
+          raise IO::Error.from_errno("fcntl(F_SETFL)")
+        end
         result = Stream::Endpoint.new(IO::FileDescriptor.new(fd))
       rescue ex
         LibC.close(fd)

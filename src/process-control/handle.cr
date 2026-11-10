@@ -1,6 +1,11 @@
 module ProcessControl
   class Handle
     def self.open(pid : Int, *, required : Capability::Request = Capability::Request.observation, expected : Identity? = nil) : Handle
+      {% if flag?(:darwin) %}
+        if required.binding.try(&.checked?) || required.operations.any? { |operation| operation.name.starts_with?("control.") }
+          return Platform::Darwin.open(pid, required: required, expected: expected)
+        end
+      {% end %}
       {% if flag?(:darwin) || (flag?(:linux) && !flag?(:android)) %}
         observation = Internal::Unix::Observer.sample(pid)
         raise Error::Missing.new("process is absent") if observation.presence.absent?
@@ -236,7 +241,7 @@ module ProcessControl
         getter owner : Handle
 
         def initialize(@failure, @owner)
-          super("duplicate acquisition refused with incomplete cleanup: #{@failure.message}")
+          super("process acquisition refused with incomplete cleanup: #{@failure.message}")
         end
       end
     end

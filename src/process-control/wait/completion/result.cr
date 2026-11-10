@@ -5,6 +5,7 @@ module ProcessControl::Wait::Completion
     getter output : Stream::Capture::Snapshot?
     getter error : Stream::Capture::Snapshot?
     getter failure : Wait::Failure?
+    @records : Array(Stream::Drain::Record)
 
     def initialize(@state, @child, records : Enumerable(Stream::Drain::Record), @output = nil, @error = nil, @failure = nil)
       @records = records.to_a.dup

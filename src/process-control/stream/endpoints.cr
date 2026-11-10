@@ -35,6 +35,7 @@ module ProcessControl::Stream
     getter input : Endpoint?
     getter output : Endpoint?
     getter error : Endpoint?
+    @captures : Array(Capture::Buffer)
 
     def initialize(@input = nil, @output = nil, @error = nil, captures : Enumerable(Capture::Buffer) = [] of Capture::Buffer)
       @captures = captures.to_a.dup

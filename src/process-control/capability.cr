@@ -11,10 +11,12 @@ module ProcessControl::Capability
     Sampled
     Retained
     Delegated
+    Checked
   end
 
   class Request
     getter binding : Binding?
+    @operations : Array(Operation)
 
     def initialize(operations : Enumerable(Operation), @binding = nil)
       @operations = operations.to_a.dup
@@ -45,6 +47,7 @@ module ProcessControl::Capability
   class Snapshot
     getter binding : Binding
     getter mechanism : String
+    @operations : Array(Operation)
 
     def initialize(operations : Enumerable(Operation), @binding, @mechanism)
       @operations = operations.to_a.dup

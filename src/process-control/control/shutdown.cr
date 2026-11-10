@@ -4,6 +4,7 @@ module ProcessControl::Control
       getter request : Control::Request
       getter mechanism : String
       getter refusal : ProcessControl::Error?
+      @reports : Array(Control::Result)
 
       def initialize(@request, reports : Enumerable(Control::Result), @mechanism, @refusal = nil)
         @reports = reports.to_a.dup
@@ -29,6 +30,8 @@ module ProcessControl::Control
     class Result
       getter state : Wait::State
       getter drain : Containment::Drain::Result
+      @phases : Array(Control::Group::Result)
+      @pending_launches : Array(Spawn::Pending)
 
       def initialize(@state, @drain, phases : Enumerable(Control::Group::Result), pending_launches : Enumerable(Spawn::Pending) = [] of Spawn::Pending)
         @phases = phases.to_a.dup

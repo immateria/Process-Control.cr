@@ -8,7 +8,7 @@ module ProcessControl::Internal::Unix
     @sequence = 0_u64
     @done = false
     @context = Thread.current
-    @started_at = Time.instant
+    @started_at = Clock.now
 
     def initialize(@socket : UNIXSocket, @token : String, pid : Int64, @signal_limit : Int32)
       @identity = ProcessControl::Identity.new(pid)

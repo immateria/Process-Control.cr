@@ -29,6 +29,8 @@ module ProcessControl::Control
     end
 
     class Partial
+      @reports : Array(Control::Result)
+
       def initialize(reports : Enumerable(Control::Result))
         @reports = reports.to_a.dup
         raise ArgumentError.new("partial report requires member/stage reports") if @reports.empty?

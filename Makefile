@@ -1,12 +1,13 @@
 .PHONY: helper test format check
+CRYSTAL ?= crystal
 
 helper:
-	crystal run scripts/build-helper.cr
+	$(CRYSTAL) run scripts/build-helper.cr -- --compiler "$(CRYSTAL)"
 
 test: helper
-	crystal spec --no-color --error-on-warnings
+	$(CRYSTAL) spec --no-color --error-on-warnings
 
 format:
-	crystal tool format --check src spec scripts examples
+	$(CRYSTAL) tool format --check src spec scripts examples native
 
 check: format test

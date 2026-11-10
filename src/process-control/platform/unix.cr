@@ -31,7 +31,7 @@ module ProcessControl::Platform::Unix
     end
 
     def launch(plan : Spawn::Plan, *, deadline : Wait::Deadline, cancel : Wait::Cancellation?) : Spawn::Attempt::Result
-      unless File.file?(@helper) && File::Info.executable?(@helper)
+      unless Internal.executable?(@helper)
         return Spawn::Attempt::Rejected.new(Error::Unsupported.new("build the Unix helper with crystal run scripts/build-helper.cr"))
       end
       unless plan.group.nil? && plan.extensions.empty? && self.class.capabilities.supports?(plan.required)

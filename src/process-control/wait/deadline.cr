@@ -1,9 +1,9 @@
 module ProcessControl::Wait
   struct Deadline
-    getter at : Time::Instant?
+    getter at : Clock::Instant?
     getter? immediate : Bool
 
-    def initialize(@at : Time::Instant?, @immediate = false)
+    def initialize(@at : Clock::Instant?, @immediate = false)
     end
 
     def self.none : self
@@ -12,15 +12,15 @@ module ProcessControl::Wait
 
     def self.after(span : Time::Span) : self
       raise ArgumentError.new("negative deadline duration") if span < Time::Span.zero
-      new(Time.instant + span, span == Time::Span.zero)
+      new(Clock.now + span, span == Time::Span.zero)
     end
 
     def remaining : Time::Span?
-      @at.try { |at| {at - Time.instant, Time::Span.zero}.max }
+      @at.try { |at| {at - Clock.now, Time::Span.zero}.max }
     end
 
     def expired? : Bool
-      @at.try { |at| Time.instant >= at } || false
+      @at.try { |at| Clock.now >= at } || false
     end
 
     # Bounded polling is the portable baseline; native event providers can use

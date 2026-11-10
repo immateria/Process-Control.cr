@@ -4,6 +4,8 @@ module ProcessControl
   VERSION = "0.1.0-preview.1"
 end
 
+require "./process-control/clock"
+require "./process-control/internal/executable"
 require "./process-control/diagnostic"
 require "./process-control/error"
 require "./process-control/identity"
@@ -35,4 +37,8 @@ require "./process-control/command"
 
 {% if flag?(:darwin) || (flag?(:linux) && !flag?(:android)) %}
   require "./process-control/platform/unix"
+{% end %}
+
+{% if flag?(:darwin) %}
+  require "./process-control/platform/darwin"
 {% end %}

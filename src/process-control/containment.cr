@@ -16,10 +16,10 @@ module ProcessControl::Containment
   struct Observation
     getter identity : Identity?
     getter population : Population
-    getter sampled_at : Time::Instant
+    getter sampled_at : Clock::Instant
     getter diagnostic : ProcessControl::Diagnostic?
 
-    def initialize(@identity, @population = Population::Unknown, @sampled_at = Time.instant, @diagnostic = nil)
+    def initialize(@identity, @population = Population::Unknown, @sampled_at = Clock.now, @diagnostic = nil)
     end
   end
 
