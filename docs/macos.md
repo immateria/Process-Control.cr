@@ -5,6 +5,8 @@ on Darwin majors 24 and 25, corresponding to macOS 15 and 26. Other majors are
 refused before creating launch descriptors or children. Native-Kernel supplies
 the stateless spawn entry and ABI sizes/offsets; this shard supplies admission,
 buffer contents, ownership, authenticated startup, target collection and cleanup.
+Dependency layout availability does not broaden this admission. Darwin 21
+(macOS 12) remains refused until its consumer lifecycle is qualified.
 
 ## Restricted helper launch
 

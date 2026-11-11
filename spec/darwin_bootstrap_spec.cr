@@ -39,7 +39,7 @@ require "file_utils"
       end
     end
 
-    def self.unknown_profile : Nil
+    def self.unsupported_profile(major : Int32, *, layout_available : Bool = false) : Nil
       directory = File.join(Dir.tempdir, "process-control-profile-#{Random::Secure.hex(8)}")
       Dir.mkdir(directory, 0o700)
       source = File.join(directory, "profile.cr")
@@ -52,13 +52,22 @@ require "file_utils"
 
         module ProcessControl::Internal::Darwin::Context
           def self.major : Int32
-            26
+            #{major}
           end
         end
 
         module Native::Kernel::Darwin::Descriptor
           def self.pipe : Native::Kernel::Darwin::Result
             raise "unknown profile attempted pipe creation"
+          end
+        end
+
+        module Native::Kernel::Darwin::Spawn
+          # Model added dependency layout data without consumer qualification.
+          # Preserve the real Darwin 21 layout when the dependency provides it.
+          def self.profile(major : Int32) : Profile?
+            profile = previous_def(major)
+            major == 21 ? (profile || Profile.new) : profile
           end
         end
 
@@ -74,7 +83,10 @@ require "file_utils"
           end
         end
 
-        raise "fixture release override failed" unless ProcessControl::Internal::Darwin::Context.major == 26
+        raise "fixture release override failed" unless ProcessControl::Internal::Darwin::Context.major == #{major}
+        unless (!Native::Kernel::Darwin::Spawn.profile(#{major}).nil?) == #{layout_available}
+          raise "fixture dependency layout availability differs"
+        end
         owner = ProcessControl::Internal::Darwin::Bootstrap.new(
           #{File.join(directory, "missing-helper").inspect}, [] of String, {} of String => String, "/",
           Process::Redirect::Pipe, Process::Redirect::Inherit, Process::Redirect::Inherit)
@@ -176,7 +188,7 @@ require "file_utils"
       before = Fixture::Darwin::Bootstrap.children
       flags = ::Native::Kernel::Darwin::Descriptor.fcntl(first, 1)
       begin
-        [0, 23, 26].each do |major|
+        [0, 21, 22, 23, 26].each do |major|
           expect_raises(PC::Error::Unsupported) { PC::Internal::Darwin::Bootstrap.preflight!(major) }
         end
         Fixture::Darwin::Bootstrap.children.should eq(before)
@@ -190,7 +202,11 @@ require "file_utils"
     end
 
     it "refuses an unknown live context before start changes descriptors" do
-      Fixture::Darwin::Bootstrap.unknown_profile
+      Fixture::Darwin::Bootstrap.unsupported_profile(26)
+    end
+
+    it "refuses an unqualified live context despite an available kernel layout" do
+      Fixture::Darwin::Bootstrap.unsupported_profile(21, layout_available: true)
     end
 
     it Fixture::Darwin::Bootstrap::EXAMPLE do

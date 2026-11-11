@@ -23,6 +23,10 @@ module ProcessControl::Internal::Darwin
     end
 
     def self.preflight!(major : Int32 = Context.major) : Kernel::Spawn::Profile
+      # Dependency layout availability does not qualify a consumer release.
+      unless major == 24 || major == 25
+        raise Error::Unsupported.new("direct helper bootstrap requires an audited Darwin 24 or 25 spawn ABI")
+      end
       Kernel::Spawn.profile(major) ||
         raise Error::Unsupported.new("direct helper bootstrap requires an audited Darwin 24 or 25 spawn ABI")
     end
