@@ -2,19 +2,23 @@
 module ProcessControl::Platform::Unix::Helper::Runtime
   TOKEN  = /([@%])("(?:\\.|[^"\\])*"|[-a-zA-Z$._0-9]+)|"(?:\\.|[^"\\])*"|;[^\n]*/
   CALL   = /\A\s*(?:%(?:"(?:\\.|[^"\\])*"|[-a-zA-Z$._0-9]+)\s*=\s*)?(?:(?:tail|musttail|notail)\s+)?(?:call|invoke|callbr)\s+/
+  ASM    = /\basm(?: sideeffect)? "((?:\\.|[^"\\])*)", "((?:\\.|[^"\\])*)"/
   NATIVE = %w(_exit __error __errno_location close closedir connect dirfd execv fcntl fork
-    kill memcmp memcpy memset opendir opendir$INODE64 pipe poll read readdir readdir$INODE64 sigaction sigemptyset
-    signal sigprocmask socket strcmp strlen strtol waitpid write).to_set
-  INTRINSICS = %w(llvm.memcpy. llvm.memmove. llvm.memset. llvm.lifetime.start. llvm.lifetime.end. llvm.expect. llvm.smin.)
+    fstat getrlimit kill memcmp memcpy memset open opendir opendir$INODE64 pipe poll read readdir readdir$INODE64 sigaction sigemptyset
+    setrlimit setsid signal sigprocmask socket strcmp strlen strtol syscall waitpid write).to_set
+  INTRINSICS = %w(llvm.memcpy. llvm.memmove. llvm.memset. llvm.lifetime.start. llvm.lifetime.end. llvm.expect. llvm.smin. llvm.smax. llvm.experimental.cttz.elts.)
 
   private def self.symbol(line : String) : String?
     line.scan(TOKEN) { |match| return match[2] if match[1]? == "@" }
     nil
   end
 
-  private def self.direct_call?(line : String) : Bool
+  private def self.direct_call?(line : String, assembly : Set(String)) : Bool
     call = CALL.match(line)
     return true unless call
+    if code = ASM.match(line)
+      return assembly.includes?(code[1] + '\0' + code[2])
+    end
     line[call.end(0)..].scan(TOKEN) do |match|
       if match[1]? && line[call.end(0)..][match.end(0)..].lstrip.starts_with?('(')
         return match[1] == "@"
@@ -23,7 +27,8 @@ module ProcessControl::Platform::Unix::Helper::Runtime
     false
   end
 
-  def self.verify(ir : String) : Nil
+  def self.verify(ir : String, *, native_symbols : Set(String) = NATIVE,
+                  assembly : Set(String) = Set(String).new) : Nil
     if ir.matches?(/^@llvm\.global_(?:ctors|dtors)\s*=/m)
       raise ArgumentError.new("native helper cannot contain runtime constructors or destructors")
     end
@@ -65,17 +70,19 @@ module ProcessControl::Platform::Unix::Helper::Runtime
           raise ArgumentError.new("native helper reaches mutable global #{name}; runtime initialization is inactive")
         end
         body.each_line do |line|
-          unless direct_call?(line)
+          unless direct_call?(line, assembly)
             raise ArgumentError.new("native helper contains an indirect or unrecognized call: #{line.strip}")
           end
         end
         body.scan(TOKEN) { |match| pending << match[2] if match[1]? == "@" }
       else
         plain = name.strip('"')
-        unless NATIVE.includes?(plain) || INTRINSICS.any? { |prefix| plain.starts_with?(prefix) }
+        unless native_symbols.includes?(plain) || INTRINSICS.any? { |prefix| plain.starts_with?(prefix) }
           raise ArgumentError.new("native helper reaches unapproved symbol #{name}")
         end
       end
     end
   end
 end
+
+require "./kernel"

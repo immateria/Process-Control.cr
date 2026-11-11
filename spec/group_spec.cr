@@ -168,3 +168,21 @@ describe PC::Group do
     PC::Group.create.should be_a(PC::Containment::Creation::Rejected)
   end
 end
+
+{% if flag?(:windows) %}
+  describe "Windows Job launcher binding" do
+    it "cannot create a process in a different Job through an unbound group" do
+      group = PC::Group.new(Fixture::Controller.new)
+      owner = PC::Platform::Windows::Job.create.as(PC::Containment::Creation::Created).group
+      begin
+        command = PC::Command.new(Process.executable_path.not_nil!)
+        result = group.spawn(command, launcher: owner.launcher)
+        result.as(PC::Spawn::Rejected).error.should be_a(PC::Error::Ownership)
+        owner.observe.population.empty?.should be_true
+      ensure
+        group.close
+        owner.close
+      end
+    end
+  end
+{% end %}

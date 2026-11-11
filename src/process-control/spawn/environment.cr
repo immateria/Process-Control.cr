@@ -14,6 +14,9 @@ module ProcessControl::Spawn
     end
 
     def resolve : Hash(String, String)
+      {% if flag?(:windows) %}
+        return Internal::Windows::Environment.resolve(@edits, @inherit)
+      {% end %}
       result = @inherit ? ENV.to_h : {} of String => String
       @edits.each do |key, value|
         if value

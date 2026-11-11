@@ -9,6 +9,10 @@ module ProcessControl::Control
     abstract def duplicate : Authority
     abstract def release(*, deadline : Wait::Deadline, cancel : Wait::Cancellation?) : Release::Result
 
+    def wait_failure(observation : ProcessControl::Observation) : Wait::Failure?
+      wait_failure
+    end
+
     def wait_failure : Wait::Failure?
       nil
     end

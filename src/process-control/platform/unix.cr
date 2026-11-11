@@ -3,6 +3,9 @@ require "random/secure"
 require "c/fcntl"
 require "./unix/helper"
 require "../internal/unix/session"
+{% if flag?(:darwin) %}
+  require "../internal/darwin/bootstrap"
+{% end %}
 require "../internal/unix/work"
 require "../internal/unix/observer"
 
@@ -31,11 +34,47 @@ module ProcessControl::Platform::Unix
     end
 
     def launch(plan : Spawn::Plan, *, deadline : Wait::Deadline, cancel : Wait::Cancellation?) : Spawn::Attempt::Result
+      {% if flag?(:darwin) %}
+        begin
+          Internal::Darwin::Bootstrap.preflight!
+        rescue ex : Error::Unsupported
+          return Spawn::Attempt::Rejected.new(ex)
+        end
+      {% end %}
       unless Internal.executable?(@helper)
         return Spawn::Attempt::Rejected.new(Error::Unsupported.new("build the Unix helper with crystal run scripts/build-helper.cr"))
       end
-      unless plan.group.nil? && plan.extensions.empty? && self.class.capabilities.supports?(plan.required)
-        return Spawn::Attempt::Rejected.new(Error::Unsupported.new("requested launch extension or authority profile is unavailable"))
+      unless self.class.capabilities.supports?(plan.required)
+        return Spawn::Attempt::Rejected.new(Error::Unsupported.new("requested Unix launch authority profile is unavailable"))
+      end
+      setup = [] of String
+      plan.extensions.each do |extension|
+        case extension
+        when Spawn::Session
+          setup << "--session"
+        when Resource::Limit
+          setup.concat(["--limit", extension.kind.to_s.downcase, extension.soft.to_s, extension.hard.to_s])
+        else
+          return Spawn::Attempt::Rejected.new(Error::Unsupported.new("Unix launch extension is unavailable: #{extension.name}"))
+        end
+      end
+      if group = plan.group
+        {% if flag?(:linux) %}
+          unless group.claim_launch(plan, self)
+            return Spawn::Attempt::Rejected.new(Error::Ownership.new("cgroup launch plan is not admitted by its group"))
+          end
+          begin
+            birth = group.birth
+            unless birth
+              return Spawn::Attempt::Rejected.new(Error::Unsupported.new("group has no available cgroup birth placement"))
+            end
+            setup.concat(["--cgroup", birth.path, birth.device.to_s, birth.inode.to_s])
+          rescue ex : ProcessControl::Error
+            return Spawn::Attempt::Rejected.new(ex)
+          end
+        {% else %}
+          return Spawn::Attempt::Rejected.new(Error::Unsupported.new("native group launch is unavailable on this platform"))
+        {% end %}
       end
       acquired = @mutex.synchronize do
         if @starting < @capacity
@@ -46,7 +85,7 @@ module ProcessControl::Platform::Unix
         end
       end
       return Spawn::Attempt::Rejected.new(Error::Unsupported.new("native launch capacity exhausted")) unless acquired
-      work = Internal::Unix::Work.new(self, plan)
+      work = Internal::Unix::Work.new(self, plan, setup)
       work.pending.on_settle { @mutex.synchronize { @starting -= 1 }; nil }
       work.start
       Spawn::Attempt::Pending.new(work.pending)

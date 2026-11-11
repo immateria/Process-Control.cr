@@ -1,29 +1,42 @@
 module ProcessControl::Internal::Darwin
   class Authority < Control::Authority
-    MECHANISM  = "darwin-audit-token-v1"
-    OPERATIONS = %w(handle.observe control.stop control.kill control.signal control.suspend control.resume)
+    MECHANISM       = "darwin-audit-token-v1"
+    WATCH_MECHANISM = "darwin-audit-token-kqueue-v1"
+    OBSERVE         = Capability::Operation.new("handle.observe")
+    WAIT            = Capability::Operation.new("wait.exit")
+    SIGNALS         = %w(control.stop control.kill control.signal control.suspend control.resume)
       .map { |name| Capability::Operation.new(name) }
 
     getter identity : ProcessControl::Identity
     @token : Token? = nil
+    @watch : Watch? = nil
+    @watch_bound = false
     @mutex = Mutex.new
     @release_result : Control::Release::Result? = nil
 
-    def self.profile : Capability::Snapshot
-      Capability::Snapshot.new(OPERATIONS, :checked, MECHANISM)
+    def self.profile(signaling : Bool, waiting : Bool) : Capability::Snapshot
+      operations = [OBSERVE]
+      operations.concat(SIGNALS) if signaling
+      operations << WAIT if waiting
+      Capability::Snapshot.new(operations, :checked, waiting ? WATCH_MECHANISM : MECHANISM)
     end
 
     def self.acquire(pid : Int, *, required : Capability::Request, expected : ProcessControl::Identity? = nil, driver : Driver) : Handle
       raise ArgumentError.new("process identifier is outside native range") unless pid > 0 && pid <= Int32::MAX
-      raise Error::Unsupported.new("Darwin authority does not satisfy the requested profile") unless profile.supports?(required)
-      raise Error::Unsupported.new("audit-token signaling is unavailable") unless driver.available?
+      operations = required.operations
+      waiting = operations.includes?(WAIT)
+      signaling = !waiting || operations.any? { |operation| SIGNALS.includes?(operation) }
+      unless profile(signaling, waiting).supports?(required)
+        raise Error::Unsupported.new("Darwin authority does not satisfy the requested profile")
+      end
+      raise Error::Unsupported.new("audit-token signaling is unavailable") if signaling && !driver.available?
       context = driver.context
       port, code = driver.open(pid.to_i32)
       raise mach_error("handle.open", "task-name", code) unless code == 0
       if port == 0
         raise Identity::Unverifiable.new("native acquisition returned a null Mach reference")
       end
-      authority = new(port, ProcessControl::Identity.new(pid), driver, context)
+      authority = new(port, ProcessControl::Identity.new(pid), driver, context, signaling)
       owner = Handle.new(authority, required: Capability::Request.new([] of Capability::Operation))
       begin
         authority.capture
@@ -32,6 +45,7 @@ module ProcessControl::Internal::Darwin
           raise Identity::Mismatch.new("expected process identity differs") if comparison.different?
           raise Identity::Unverifiable.new("expected identity cannot be established") if comparison.indeterminate?
         end
+        authority.register_watch if waiting
         owner
       rescue ex
         cleanup = owner.close
@@ -40,7 +54,7 @@ module ProcessControl::Internal::Darwin
       end
     end
 
-    def initialize(@port : UInt32, @identity, @driver : Driver, @context : Int64)
+    def initialize(@port : UInt32, @identity, @driver : Driver, @context : Int64, @signaling : Bool)
     end
 
     def capture : Nil
@@ -57,12 +71,30 @@ module ProcessControl::Internal::Darwin
     end
 
     def capabilities : Capability::Snapshot
-      operations = @token ? OPERATIONS : [] of Capability::Operation
-      Capability::Snapshot.new(operations, :checked, MECHANISM)
+      return Capability::Snapshot.new([] of Capability::Operation, :checked, MECHANISM) unless @token
+      self.class.profile(@signaling, @watch_bound)
+    end
+
+    protected def register_watch : Nil
+      check!
+      pid = @identity.pid.to_i32
+      fd = @driver.open_watch
+      @watch = Watch.new(fd, @identity, @driver)
+      @driver.register_watch(fd, pid)
+      # The Mach token precedes PID registration. A fresh PID lookup after
+      # registration rules out binding an event from a replacement process.
+      unless @driver.watch_version(pid) == @token.not_nil!.version
+        raise Identity::Mismatch.new("Darwin exit watch names a different PID generation")
+      end
+      check_context!
+      @watch_bound = true
     end
 
     def observe : ProcessControl::Observation
       check!
+      if observation = @watch.try(&.observe)
+        return observation
+      end
       words, count, code = @driver.read(@port)
       if code != 0
         diagnostic = self.class.mach_error("handle.observe", "observation", code).diagnostic
@@ -76,12 +108,17 @@ module ProcessControl::Internal::Darwin
       ProcessControl::Observation.new(@identity, presence: :present)
     end
 
+    def wait_failure : Wait::Failure?
+      @watch.try(&.failure)
+    end
+
     def perform(request : Control::Request, *, deadline : Wait::Deadline, cancel : Wait::Cancellation?) : Control::Result
       begin
         check!
       rescue ex : ProcessControl::Error
         return refused(request, ex)
       end
+      return refused(request, Error::Unsupported.new("audit-token signaling was not acquired")) unless @signaling
       if cancel.try(&.cancelled?) || (deadline.expired? && !deadline.immediate?)
         return refused(request, Error.new("control cancelled or budget expired before native delivery"))
       end
@@ -113,13 +150,16 @@ module ProcessControl::Internal::Darwin
       check!
       code = @driver.retain(@port)
       raise self.class.mach_error("handle.duplicate", "duplicate", code) unless code == 0
-      copy = self.class.new(@port, @identity, @driver, @context)
-      copy.bind(@token.not_nil!)
+      copy = self.class.new(@port, @identity, @driver, @context, @signaling)
+      copy.bind(@token.not_nil!, @watch)
       copy
     end
 
-    protected def bind(token : Token) : Nil
+    protected def bind(token : Token, watch : Watch?) : Nil
       @token = token
+      watch.try(&.retain)
+      @watch = watch
+      @watch_bound = !watch.nil?
     end
 
     def release(*, deadline : Wait::Deadline, cancel : Wait::Cancellation?) : Control::Release::Result
@@ -133,19 +173,24 @@ module ProcessControl::Internal::Darwin
         if cancel.try(&.cancelled?) || (deadline.expired? && !deadline.immediate?)
           return retryable("native release was not attempted within its budget")
         end
+        records = [] of Control::Release::Record
+        if record = @watch.try(&.release)
+          records << record
+        end
         code = @driver.release(@port)
-        @release_result = if code == 0
-                            Control::Release::Result.complete
-                          else
-                            diagnostic = self.class.mach_error("handle.close", "release", code).diagnostic
-                            Control::Release::Result.new([Control::Release::Record.new("Darwin task-name reference", :uncertain, diagnostic)])
-                          end
+        if code != 0
+          diagnostic = self.class.mach_error("handle.close", "release", code).diagnostic
+          records << Control::Release::Record.new("Darwin task-name reference", :uncertain, diagnostic)
+        end
+        @release_result = Control::Release::Result.new(records)
       end
     end
 
     private def retryable(message : String) : Control::Release::Result
       diagnostic = Diagnostic.new("handle.close", message, stage: "before-release")
-      Control::Release::Result.new([Control::Release::Record.new("Darwin task-name reference", :retryable, diagnostic)])
+      records = [Control::Release::Record.new("Darwin task-name reference", :retryable, diagnostic)]
+      records << Control::Release::Record.new("Darwin exit watch", :retryable, diagnostic) if @watch
+      Control::Release::Result.new(records)
     end
 
     private def check_context! : Nil

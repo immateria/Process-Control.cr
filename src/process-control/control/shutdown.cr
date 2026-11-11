@@ -4,9 +4,10 @@ module ProcessControl::Control
       getter request : Control::Request
       getter mechanism : String
       getter refusal : ProcessControl::Error?
+      getter effect : Control::Report::Success | Control::Report::Failure | Nil
       @reports : Array(Control::Result)
 
-      def initialize(@request, reports : Enumerable(Control::Result), @mechanism, @refusal = nil)
+      def initialize(@request, reports : Enumerable(Control::Result), @mechanism, @refusal = nil, *, @effect = nil)
         @reports = reports.to_a.dup
       end
 

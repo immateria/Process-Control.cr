@@ -7,6 +7,15 @@ module ProcessControl::Containment
     end
   end
 
+  struct Birth
+    getter path : String
+    getter device : UInt64
+    getter inode : UInt64
+
+    def initialize(@path, @device, @inode)
+    end
+  end
+
   enum Population
     Empty
     Populated
@@ -18,8 +27,9 @@ module ProcessControl::Containment
     getter population : Population
     getter sampled_at : Clock::Instant
     getter diagnostic : ProcessControl::Diagnostic?
+    getter frozen : Bool?
 
-    def initialize(@identity, @population = Population::Unknown, @sampled_at = Clock.now, @diagnostic = nil)
+    def initialize(@identity, @population = Population::Unknown, @sampled_at = Clock.now, @diagnostic = nil, *, @frozen = nil)
     end
   end
 
@@ -31,6 +41,12 @@ module ProcessControl::Containment
   end
 
   module Membership
+    class Request < Control::Request
+      def operation : String
+        "group.attach"
+      end
+    end
+
     struct Result
       getter subject : ProcessControl::Identity
       getter group : Containment::Identity?
@@ -74,6 +90,14 @@ module ProcessControl::Containment
   end
 
   abstract class Controller
+    def launcher : Spawn::Launcher?
+      nil
+    end
+
+    def birth : Birth?
+      nil
+    end
+
     abstract def identity : Identity?
     abstract def capabilities : Capability::Snapshot
     abstract def observe : Observation

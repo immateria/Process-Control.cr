@@ -8,10 +8,22 @@ module ProcessControl::Internal::Unix
     def self.sample(pid : Int) : ProcessControl::Observation
       raise ArgumentError.new("process identifier is outside native range") unless pid > 0 && pid <= Int32::MAX
       identity = ProcessControl::Identity.new(pid)
-      if LibC.kill(pid.to_i32, 0) == 0
+      code = 0
+      {% if flag?(:darwin) %}
+        if Internal::Darwin::Inspection.zombie?(pid.to_i32)
+          return ProcessControl::Observation.new(identity, presence: :present, termination: :terminated, execution: :zombie)
+        end
+      {% end %}
+      {% if flag?(:darwin) %}
+        result = Internal::Darwin::Kernel.call(37, pid.to_u64!, 0_u64)
+        code = result.error
+      {% else %}
+        code = LibC.kill(pid.to_i32, 0) == 0 ? 0 : Errno.value.value
+      {% end %}
+      if code == 0
         return ProcessControl::Observation.new(identity, presence: :present)
       end
-      error = Errno.value
+      error = Errno.new(code)
       if error == Errno::ESRCH
         ProcessControl::Observation.new(identity, presence: :absent)
       else

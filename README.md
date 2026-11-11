@@ -1,9 +1,8 @@
 # Process-Control
 
 Process ownership, launch, control and status collection for Crystal applications.
-The shard has no runtime shard dependencies. It is an early implementation of
-the standalone process-control design, with a working macOS/Linux child backend
-and provider interfaces for other launchers and containment controllers.
+The shard has no runtime shard dependencies. The [support matrix](docs/support.md)
+records which profiles have run natively.
 
 Crystal 1.10.0 or newer and its native linker are required. Build the Unix
 target-owner helper explicitly:
@@ -19,9 +18,22 @@ shard does not compile it, open a connection or launch a process. Set
 
 The helper is written in Crystal with a custom entry point. It does not start
 Crystal's managed runtime, scheduler or child reaper. The build checks generated
-LLVM before and after optimization before installing it. There is no handwritten C or separate C compilation;
-native OS libraries and linking remain necessary. Cache keys include all
-helper/build/audit sources, the compiler description and architecture/OS profile.
+LLVM before and after optimization before installing it. The Darwin helper uses
+direct kernel traps, and its linked executable must have no undefined imports.
+Apple's linker still requires a libSystem loader entry. The Linux helper calls
+C-ABI system interfaces. Neither helper uses handwritten C or a separate C
+compilation. Cache keys include all helper/build/audit sources, the compiler
+description and architecture/OS profile.
+
+The managed Crystal application still uses platform libraries for its runtime
+and ordinary I/O. On Darwin, the shard's process launch, inspection and checked
+control entry calls use BSD syscalls and Mach traps directly. Helper launch uses
+a private spawn ABI gated to Darwin 24 (macOS 15); task messages require macOS 13
+or later, and audit-token signaling requires macOS 15 or later. Other Darwin
+releases need their own ABI audit and native qualification. See the
+[rewrite record](docs/support.md#direct-darwin-rewrite-on-2026-11-10) for the
+current verification state.
+
 To select a compiler:
 
 ```sh
@@ -74,19 +86,29 @@ Unix PID observation is available through `ProcessControl.observe(pid)` and
 the default `Handle.open`. It preserves unknown termination/generation fields.
 A sampled PID is refused as control authority.
 
-On macOS, request `Handle.open(pid, required: Capability::Request.control)` for
-control of an existing process. The Darwin backend checks identity in the native
-signal operation and reports `Binding::Checked`. It supports stop, kill, POSIX
-signals and POSIX stop/continue. Availability and access depend on the running
-system; unsupported profiles refuse explicitly. It does not need the launch
-helper executable. Close each owned handle when finished. This profile supplies
-no exit wait or child status.
+Request `Capability::Request.wait` to wait on an existing process. Linux uses
+a retained pidfd. macOS binds an exit watch to a checked PID generation. Child
+status on those platforms still comes from its collector. A Windows process
+HANDLE can supply the unsigned exit code after it signals. Close owned handles
+when finished.
 
-`Group` implements admission, pending-launch accounting and shutdown orchestration
-against an explicit `Containment::Controller`. Native Job/cgroup/process-group
-creation is not implemented yet. Requests for those native workflows are refused.
+On macOS, `Capability::Request.control` requests audit-token signaling.
+`Inspection.snapshot` enumerates visible PIDs and samples their state and
+generation.
+
+On Unix, add `Spawn::Session.new` to a command for a new session or
+`Resource::Limit.new(:file, 1024)` for a 1,024-byte file-size limit.
+The helper applies both before exec.
+
+On Linux, `Platform::Linux::Cgroup.open(path)` opens a delegated cgroup v2
+directory. Its group places targets at creation with `clone3(CLONE_INTO_CGROUP)`.
+Population, target exit status and directory lifetime are independent. The
+caller creates and removes the directory.
+
+On Windows, `Platform::Windows::Job.create` creates a group whose launcher
+places children inside the Job at creation. See the [Windows profile](docs/windows.md).
 
 [Contracts](docs/contracts.md) describe ownership and failure handling.
 [Support](docs/support.md) separates implemented behavior, native checks and
-planned feature homes. [Research](docs/research.md) records the behavior labs
-used to choose regression cases.
+planned feature homes. [Behavior](docs/behavior.md) maps runner observations
+to the shard's operations and remaining cases.

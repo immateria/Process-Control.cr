@@ -2,8 +2,12 @@ module ProcessControl
   class Handle
     def self.open(pid : Int, *, required : Capability::Request = Capability::Request.observation, expected : Identity? = nil) : Handle
       {% if flag?(:darwin) %}
-        if required.binding.try(&.checked?) || required.operations.any? { |operation| operation.name.starts_with?("control.") }
+        if required.binding.try(&.checked?) || required.operations.any? { |operation| operation.name == "wait.exit" || operation.name.starts_with?("control.") }
           return Platform::Darwin.open(pid, required: required, expected: expected)
+        end
+      {% elsif flag?(:linux) && !flag?(:android) && (flag?(:aarch64) || flag?(:x86_64)) %}
+        if required.binding.try(&.retained?) || required.operations.any? { |operation| operation.name == "wait.exit" || operation.name.starts_with?("control.") }
+          return Platform::Linux.open(pid, required: required, expected: expected)
         end
       {% end %}
       {% if flag?(:darwin) || (flag?(:linux) && !flag?(:android)) %}
@@ -19,6 +23,8 @@ module ProcessControl
           end
         end
         new(Internal::Unix::Observer.new(observation.identity), required: required)
+      {% elsif flag?(:windows) %}
+        Platform::Windows.open(pid, required: required, expected: expected)
       {% else %}
         raise Error::Unsupported.new("existing-process acquisition is not implemented on this platform")
       {% end %}
@@ -91,7 +97,7 @@ module ProcessControl
           return Wait::Exit::Result.new(:failed, Observation.new(identity), Wait::Failure.new(error))
         end
         observation = observe
-        if failure = @authority.wait_failure
+        if failure = @authority.wait_failure(observation)
           return Wait::Exit::Result.new(:failed, observation, failure)
         end
         return Wait::Exit::Result.new(:completed, observation) if observation.termination.terminated?

@@ -43,13 +43,17 @@ module ProcessControl
       caller_directory = Dir.current
       environment = @environment.resolve
       directory = @cwd ? File.expand_path(@cwd.not_nil!, caller_directory) : caller_directory
-      path = if @executable.includes?(File::SEPARATOR) || @executable.includes?('/')
-               File.expand_path(@executable, caller_directory)
-             else
-               search = environment["PATH"]? || ENV["PATH"]? || ""
-               search.split(Process::PATH_DELIMITER).map { |entry| File.expand_path(File.join(entry, @executable), caller_directory) }
-                 .find { |candidate| Internal.executable?(candidate) }
-             end
+      path = {% if flag?(:windows) %}
+               Internal::Windows.executable(@executable, caller_directory, environment)
+             {% else %}
+               if @executable.includes?(File::SEPARATOR) || @executable.includes?('/')
+                 File.expand_path(@executable, caller_directory)
+               else
+                 search = environment["PATH"]? || ENV["PATH"]? || ""
+                 search.split(Process::PATH_DELIMITER).map { |entry| File.expand_path(File.join(entry, @executable), caller_directory) }
+                   .find { |candidate| Internal.executable?(candidate) }
+               end
+             {% end %}
       raise Error::Missing.new("executable not found: #{@executable}") unless path
       Spawn::Plan.new(path, @args, environment, directory, @stdio, required, @extensions, group)
     end
@@ -59,7 +63,11 @@ module ProcessControl
       if cancel.try(&.cancelled?) || (deadline.expired? && !deadline.immediate?)
         return Spawn::Rejected.new(Error.new("spawn cancelled or expired before creation"))
       end
-      provider = launcher || Spawn::Launcher.default
+      bound = group.try(&.launcher)
+      if bound && launcher && !bound.same?(launcher)
+        return Spawn::Rejected.new(Error::Ownership.new("launcher does not own the selected group"))
+      end
+      provider = bound || launcher || Spawn::Launcher.default
       return Spawn::Rejected.new(Error::Unsupported.new("no qualified native launcher selected")) unless provider
       plan = begin
         prepare(required: required, group: group)
@@ -67,7 +75,7 @@ module ProcessControl
         return Spawn::Rejected.new(ex)
       end
       if group
-        group.admit_spawn { execute(provider, plan, deadline: deadline, cancel: cancel) }
+        group.admit_spawn(plan) { execute(provider, plan, deadline: deadline, cancel: cancel) }
       else
         execute(provider, plan, deadline: deadline, cancel: cancel)
       end
@@ -80,7 +88,7 @@ module ProcessControl
       in Spawn::Attempt::Rejected
         attempt.result
       in Spawn::Attempt::Pending
-        attempt.owner.resolve(deadline: deadline, cancel: cancel)
+        attempt.wait? ? attempt.owner.resolve(deadline: deadline, cancel: cancel) : attempt.owner
       end
     end
   end

@@ -49,27 +49,56 @@ begin
     abort "Native helper development compilation failed."
   end
   development_ir = File.read(development + ".ll")
+  native_symbols = Set(String).new
+  assembly = Set(String).new
+  {% if flag?(:darwin) %}
+    native_symbols = Set(String).new
+    assembly = ProcessControl::Platform::Unix::Helper::Runtime.kernel_assembly
+  {% else %}
+    native_symbols = ProcessControl::Platform::Unix::Helper::Runtime::NATIVE
+    assembly = ["\0~{memory}"].to_set
+  {% end %}
   begin
-    ProcessControl::Platform::Unix::Helper::Runtime.verify(development_ir)
+    ProcessControl::Platform::Unix::Helper::Runtime.verify(development_ir, native_symbols: native_symbols, assembly: assembly)
   rescue ex
     File.write(destination + ".development.rejected.ll", development_ir)
     raise ex
   end
-  status = Process.run(compiler,
-    ["build", "--release", "--no-debug", "--error-on-warnings", "-Dwithout_main", "--emit", "llvm-ir",
-     ProcessControl::Platform::Unix::Helper.source, "-o", temporary],
-    chdir: workspace, output: STDOUT, error: STDERR)
-  abort "Native helper compilation failed." unless status.success?
+  release_args = ["build", "--release", "--no-debug", "--error-on-warnings", "-Dwithout_main", "--emit", "llvm-ir"]
+  {% if flag?(:darwin) %}
+    release_args << "--cross-compile"
+  {% end %}
+  release_args.concat([ProcessControl::Platform::Unix::Helper.source, "-o", temporary])
+  release_output = IO::Memory.new
+  status = Process.run(compiler, release_args,
+    chdir: workspace, output: release_output, error: STDERR)
+  unless status.success?
+    STDERR << release_output.to_s
+    abort "Native helper compilation failed."
+  end
   ir = File.read(temporary + ".ll")
   begin
-    ProcessControl::Platform::Unix::Helper::Runtime.verify(ir)
+    ProcessControl::Platform::Unix::Helper::Runtime.verify(ir, native_symbols: native_symbols, assembly: assembly)
   rescue ex
     File.write(destination + ".rejected.ll", ir)
     raise ex
   end
+  {% if flag?(:darwin) %}
+    architecture = {{ flag?(:aarch64) ? "arm64" : "x86_64" }}
+    status = Process.run("cc", ["-arch", architecture, temporary + ".o", "-o", temporary, "-Wl,-dead_strip"],
+      output: STDOUT, error: STDERR)
+    abort "Darwin helper native linking failed." unless status.success?
+    imports = IO::Memory.new
+    status = Process.run("xcrun", ["nm", "-u", temporary], output: imports, error: STDERR)
+    abort "Darwin helper import inspection failed." unless status.success?
+    unless imports.to_s.strip.empty?
+      abort "Darwin helper imports external library symbols:\n#{imports}"
+    end
+  {% end %}
   File.write(destination + ".audit.json", {"source" => ProcessControl::Platform::Unix::Helper.fingerprint,
                                            "compiler" => Crystal::DESCRIPTION, "target" => ProcessControl::Platform::Unix::Helper::TARGET,
-                                           "ir" => Digest::SHA256.hexdigest(ir), "development_ir" => Digest::SHA256.hexdigest(development_ir)}.to_json)
+                                           "ir" => Digest::SHA256.hexdigest(ir), "development_ir" => Digest::SHA256.hexdigest(development_ir),
+                                           "native_symbols" => native_symbols.to_a.sort, "assembly" => assembly.to_a.sort}.to_json)
   File.rename(temporary + ".ll", destination + ".ll")
   File.rename(development + ".ll", destination + ".development.ll")
   File.chmod(temporary, 0o700)

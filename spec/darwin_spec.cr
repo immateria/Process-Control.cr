@@ -11,7 +11,86 @@ require "./support/darwin"
       driver.available = true
       retained = PC::Capability::Request.new([PC::Capability::Operation.new("control.kill")], :retained)
       expect_raises(PC::Error::Unsupported) { driver.acquire(required: retained) }
-      expect_raises(PC::Error::Unsupported) { driver.acquire(required: PC::Capability::Request.wait) }
+      driver.references.should eq(0)
+    end
+
+    it "refuses the watcher if the PID generation changed during registration" do
+      driver = Fixture::Darwin::Driver.new
+      driver.watch_version = 8_u32
+      expect_raises(PC::Identity::Mismatch) { driver.acquire(required: PC::Capability::Request.wait) }
+      driver.references.should eq(0)
+      driver.watch_closes.should eq(1)
+      driver.watch_polls.should eq(0)
+    end
+
+    it "treats ESRCH during registration as a failed acquisition" do
+      driver = Fixture::Darwin::Driver.new
+      diagnostic = PC::Diagnostic.new("handle.open", "kevent registration failed", native_domain: "errno",
+        native_code: Errno::ESRCH.value.to_i64, stage: "register-watch")
+      driver.registration_error = PC::Observation::Failed.new("watch registration failed", diagnostic)
+      error = expect_raises(PC::Observation::Failed) { driver.acquire(required: PC::Capability::Request.wait) }
+      error.diagnostic.not_nil!.native_code.should eq(Errno::ESRCH.value)
+      driver.references.should eq(0)
+      driver.watch_closes.should eq(1)
+    end
+
+    it "consumes a one-shot exit event once across duplicates" do
+      driver = Fixture::Darwin::Driver.new
+      driver.available = false
+      handle = driver.acquire(required: PC::Capability::Request.wait)
+      copy = nil.as(PC::Handle?)
+      begin
+        copy = handle.duplicate(required: PC::Capability::Request.wait)
+        first = handle.wait_exit(deadline: PC::Wait::Deadline.after(Time::Span.zero))
+        second = copy.wait_exit(deadline: PC::Wait::Deadline.after(Time::Span.zero))
+        first.state.completed?.should be_true
+        second.observation.should eq(first.observation)
+        driver.watch_polls.should eq(1)
+        handle.close.complete?.should be_true
+        driver.watch_closes.should eq(0)
+      ensure
+        copy.try(&.close)
+        handle.close
+      end
+      driver.watch_closes.should eq(1)
+    end
+
+    it "wakes a pending local wait as closed when its handle closes" do
+      driver = Fixture::Darwin::Driver.new
+      driver.watch_exited = false
+      handle = driver.acquire(required: PC::Capability::Request.wait)
+      result = Channel(PC::Wait::Exit::Result).new(1)
+      deadline = PC::Wait::Deadline.after(5.seconds)
+      spawn { result.send(handle.wait_exit(deadline: deadline)) }
+      begin
+        until driver.watch_polls > 0
+          raise "wait did not sample its source" if deadline.expired?
+          deadline.pause
+        end
+        handle.close.complete?.should be_true
+        select
+        when receipt = result.receive
+          receipt.state.closed?.should be_true
+          receipt.observation.termination.unknown?.should be_true
+        when timeout(5.seconds)
+          fail "closed handle did not settle its wait"
+        end
+      ensure
+        handle.close
+      end
+    end
+
+    it "records an uncertain queue close and releases the Mach reference" do
+      driver = Fixture::Darwin::Driver.new
+      driver.watch_close_code = Errno::EINTR.value
+      handle = driver.acquire(required: PC::Capability::Request.wait)
+      result = handle.close
+      result.state.uncertain?.should be_true
+      record = result.records.first
+      record.resource.should eq("Darwin exit watch")
+      record.diagnostic.not_nil!.native_code.should eq(Errno::EINTR.value)
+      handle.retry_cleanup.state.uncertain?.should be_true
+      driver.watch_closes.should eq(1)
       driver.references.should eq(0)
     end
 

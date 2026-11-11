@@ -5,8 +5,10 @@ module ProcessControl
     @closed = false
     @inflight = 0
     @effects = 0
+    @suspensions = 0
     @generation = 0_u64
     @launches = Set(Spawn::Pending).new
+    @plans = Set(Spawn::Plan).new
     @cleanup_busy = false
     @release_result : Control::Release::Result? = nil
 
@@ -33,6 +35,11 @@ module ProcessControl
       @controller.capabilities
     end
 
+    # The launcher uses this only while its spawn admission holds the controller.
+    def birth : Containment::Birth?
+      @controller.birth
+    end
+
     def closed? : Bool
       @mutex.synchronize { @closed }
     end
@@ -49,15 +56,36 @@ module ProcessControl
       @mutex.synchronize { @release_result }
     end
 
-    def admit_spawn(&launch : -> Spawn::Result) : Spawn::Result
+    def launcher : Spawn::Launcher?
+      @controller.launcher
+    end
+
+    # A native launcher consumes the exact plan admitted by this group.
+    def claim_launch(plan : Spawn::Plan, launcher : Spawn::Launcher) : Bool
+      return false unless plan.group.same?(self)
+      if bound = self.launcher
+        return false unless bound.same?(launcher)
+      end
+      @mutex.synchronize do
+        if @plans.includes?(plan)
+          @plans.delete(plan)
+          true
+        else
+          false
+        end
+      end
+    end
+
+    def admit_spawn(plan : Spawn::Plan? = nil, &launch : -> Spawn::Result) : Spawn::Result
       admitted = @mutex.synchronize do
-        unless @admission_closed || @closed
+        unless @admission_closed || @closed || @suspensions > 0
           @inflight += 1
+          @plans.add(plan) if plan
           @generation &+= 1
           true
         end
       end
-      return Spawn::Rejected.new(Error::Closed.new("group launch admission is closed")) unless admitted
+      return Spawn::Rejected.new(Error::Closed.new("group is not admitting launches")) unless admitted
       retained = false
       begin
         result = launch.call
@@ -68,6 +96,7 @@ module ProcessControl
         end
         result
       ensure
+        @mutex.synchronize { @plans.delete(plan) } if plan
         finish unless retained
       end
     end
@@ -107,6 +136,14 @@ module ProcessControl
     end
 
     def kill(request : Control::Kill::Request = Control::Kill::Request.new, *, deadline : Wait::Deadline = Wait::Deadline.none, cancel : Wait::Cancellation? = nil) : Control::Group::Result
+      control(request, deadline: deadline, cancel: cancel)
+    end
+
+    def suspend(request : Control::Suspend::Request = Control::Suspend::Request.new, *, deadline : Wait::Deadline = Wait::Deadline.none, cancel : Wait::Cancellation? = nil) : Control::Group::Result
+      control(request, deadline: deadline, cancel: cancel)
+    end
+
+    def resume(request : Control::Resume::Request = Control::Resume::Request.new, *, deadline : Wait::Deadline = Wait::Deadline.none, cancel : Wait::Cancellation? = nil) : Control::Group::Result
       control(request, deadline: deadline, cancel: cancel)
     end
 
@@ -167,15 +204,19 @@ module ProcessControl
                   Error::Unsupported.new("group control operation unavailable")
                 end
       return Control::Group::Result.new(request, [] of Control::Result, capabilities.mechanism, refusal) if refusal
-      admitted = @mutex.synchronize do
-        unless @closed
+      suspension = request.is_a?(Control::Suspend::Request)
+      refusal = @mutex.synchronize do
+        if @closed
+          Error::Closed.new("group is closed")
+        elsif suspension && @inflight > 0
+          Error::Ownership.new("cannot suspend a group while it has admitted launches")
+        else
           @effects += 1
-          true
+          @suspensions += 1 if suspension
+          nil
         end
       end
-      unless admitted
-        return Control::Group::Result.new(request, [] of Control::Result, capabilities.mechanism, Error::Closed.new("group is closed"))
-      end
+      return Control::Group::Result.new(request, [] of Control::Result, capabilities.mechanism, refusal) if refusal
       retained = false
       begin
         result = @controller.control(request, deadline: deadline, cancel: cancel)
@@ -186,14 +227,14 @@ module ProcessControl
           owners.each do |owner|
             owner.on_settle do
               done = guard.synchronize { count -= 1; count == 0 }
-              finish_effect if done
+              finish_effect(suspension: suspension) if done
             end
           end
           retained = true
         end
         result
       ensure
-        finish_effect unless retained
+        finish_effect(suspension: suspension) unless retained
       end
     end
 
@@ -217,8 +258,11 @@ module ProcessControl
       end
     end
 
-    private def finish_effect : Nil
-      @mutex.synchronize { @effects -= 1 }
+    private def finish_effect(*, suspension : Bool = false) : Nil
+      @mutex.synchronize do
+        @effects -= 1
+        @suspensions -= 1 if suspension
+      end
     end
 
     private def cleanup(*, deadline : Wait::Deadline, cancel : Wait::Cancellation?) : Control::Release::Result

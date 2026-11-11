@@ -7,9 +7,11 @@ end
 require "./process-control/clock"
 require "./process-control/internal/executable"
 require "./process-control/diagnostic"
+require "./process-control/internal/callbacks"
 require "./process-control/error"
 require "./process-control/identity"
 require "./process-control/observation"
+require "./process-control/inspection"
 require "./process-control/capability"
 require "./process-control/wait/deadline"
 require "./process-control/wait/cancellation"
@@ -33,6 +35,8 @@ require "./process-control/containment"
 require "./process-control/control/shutdown"
 require "./process-control/group"
 require "./process-control/spawn/launcher"
+require "./process-control/spawn/session"
+require "./process-control/resource/limit"
 require "./process-control/command"
 
 {% if flag?(:darwin) || (flag?(:linux) && !flag?(:android)) %}
@@ -41,4 +45,12 @@ require "./process-control/command"
 
 {% if flag?(:darwin) %}
   require "./process-control/platform/darwin"
+{% end %}
+
+{% if flag?(:linux) && !flag?(:android) && (flag?(:aarch64) || flag?(:x86_64)) %}
+  require "./process-control/platform/linux"
+{% end %}
+
+{% if flag?(:windows) %}
+  require "./process-control/platform/windows"
 {% end %}

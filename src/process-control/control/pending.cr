@@ -5,6 +5,7 @@ module ProcessControl::Control
     @result : Result? = nil
     @closed = false
     @callbacks = [] of Proc(Nil)
+    @callback_failures = [] of ProcessControl::Diagnostic
 
     def initialize(@request : Request, @identity : ProcessControl::Identity, @mechanism : String)
     end
@@ -19,7 +20,7 @@ module ProcessControl::Control
         @callbacks.clear
         copied
       end
-      callbacks.each(&.call)
+      notify(callbacks)
     end
 
     def on_settle(&callback : -> Nil) : Nil
@@ -31,7 +32,16 @@ module ProcessControl::Control
           false
         end
       end
-      callback.call if settled
+      notify([callback]) if settled
+    end
+
+    def callback_failures : Array(ProcessControl::Diagnostic)
+      @mutex.synchronize { @callback_failures.dup }
+    end
+
+    private def notify(callbacks : Array(Proc(Nil))) : Nil
+      failures = Internal::Callbacks.run("control.settle", callbacks)
+      @mutex.synchronize { @callback_failures.concat(failures) }
     end
 
     def latest : Result?

@@ -1,7 +1,9 @@
 require "../internal/darwin/abi"
+require "../internal/darwin/inspection"
 require "../internal/darwin/token"
 require "../internal/darwin/driver"
 require "../internal/darwin/native"
+require "../internal/darwin/watch"
 require "../internal/darwin/authority"
 
 module ProcessControl::Platform::Darwin

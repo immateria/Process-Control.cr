@@ -2,8 +2,8 @@ require "./spec_helper"
 
 {% if flag?(:darwin) || (flag?(:linux) && !flag?(:android)) %}
   module Fixture
-    def self.native(command : PC::Command) : PC::Child
-      result = command.spawn(deadline: PC::Wait::Deadline.after(5.seconds))
+    def self.native(command : PC::Command, *, launcher : PC::Spawn::Launcher? = nil) : PC::Child
+      result = command.spawn(launcher: launcher, deadline: PC::Wait::Deadline.after(5.seconds))
       case result
       in PC::Spawn::Started
         result.child
@@ -23,6 +23,35 @@ require "./spec_helper"
   end
 
   describe "Unix native process workflow" do
+    it "preserves native streams and status when a launch subscriber raises" do
+      launcher = PC::Platform::Unix::Launcher.new(capacity: 1)
+      command = Fixture.captured("read -r line; printf '%s' \"$line\"; exit 37").with_stdio(
+        PC::Stream::Stdio.new(input: PC::Stream::Pipe.new, output: PC::Stream::Capture.new))
+      pending = command.spawn(launcher: launcher, deadline: PC::Wait::Deadline.after(Time::Span.zero)).as(PC::Spawn::Pending)
+      pending.on_settle { raise "native launch subscriber failed" }
+      child = pending.resolve(deadline: PC::Wait::Deadline.after(5.seconds)).as(PC::Spawn::Started).child
+      begin
+        pending.callback_failures.map(&.message).should eq(["native launch subscriber failed"])
+        child.streams.input.not_nil!.puts "retained streams"
+        child.streams.close_input
+        result = child.complete(deadline: PC::Wait::Deadline.after(5.seconds))
+        result.state.completed?.should be_true
+        result.child.info.not_nil!.code.should eq(37_u32)
+        result.output.not_nil!.bytes.should eq("retained streams".to_slice)
+        expect_raises(PC::Error::Ownership) { pending.resolve }
+        following = Fixture.native(PC::Command.new("/usr/bin/true"), launcher: launcher)
+        begin
+          following.wait_exit(deadline: PC::Wait::Deadline.after(5.seconds)).info.not_nil!.success?.should be_true
+        ensure
+          following.close
+        end
+      ensure
+        child.handle.kill
+        child.wait_exit(deadline: PC::Wait::Deadline.after(5.seconds))
+        child.close
+      end
+    end
+
     it "reports native exec failure after accounting for the created target" do
       directory = "/tmp/process-control-exec-#{Random::Secure.hex(10)}"
       Dir.mkdir(directory, 0o700)
@@ -98,6 +127,88 @@ require "./spec_helper"
         result.info.not_nil!.signal.should eq(13)
       ensure
         child.close
+      end
+    end
+
+    it "closes a foreign inheritable descriptor before releasing the target" do
+      directory = "/tmp/process-control-inheritance-#{Random::Secure.hex(10)}"
+      Dir.mkdir(directory, 0o700)
+      wrapper = File.join(directory, "open-before-helper")
+      reached = File.join(directory, "descriptor-opened")
+      File.write(wrapper, <<-SH)
+        #!/bin/sh
+        exec 9</dev/null
+        test -e /dev/fd/9 || exit 70
+        printf opened > "$PROCESS_CONTROL_REACHED"
+        exec "$PROCESS_CONTROL_REAL_HELPER" "$@"
+        SH
+      File.chmod(wrapper, 0o700)
+      begin
+        launcher = PC::Platform::Unix::Launcher.new(wrapper)
+        command = Fixture.captured("test ! -e /dev/fd/9").with_env({
+          "PROCESS_CONTROL_REACHED"     => reached,
+          "PROCESS_CONTROL_REAL_HELPER" => PC::Platform::Unix::Helper.path,
+        })
+        child = Fixture.native(command, launcher: launcher)
+        begin
+          result = child.wait_exit(deadline: PC::Wait::Deadline.after(5.seconds))
+          File.read(reached).should eq("opened")
+          result.info.not_nil!.success?.should be_true
+        ensure
+          child.close
+        end
+      ensure
+        File.delete(reached) if File.exists?(reached)
+        File.delete(wrapper)
+        Dir.delete(directory)
+      end
+    end
+
+    it "preserves unrelated pipe ownership across concurrent failed execs" do
+      directory = "/tmp/process-control-failed-exec-#{Random::Secure.hex(10)}"
+      Dir.mkdir(directory, 0o700)
+      executable = File.join(directory, "invalid")
+      File.write(executable, "not an executable image\n")
+      File.chmod(executable, 0o700)
+      command = PC::Command.new(executable).with_stdio(
+        PC::Stream::Stdio.new(input: PC::Stream::Pipe.new, output: PC::Stream::Capture.new, error: PC::Stream::Capture.new))
+      begin
+        outcomes = Channel(Exception?).new(4)
+        4.times do
+          spawn do
+            begin
+              IO.pipe do |reader, writer|
+                reader.read_timeout = 5.seconds
+                4.times do
+                  result = command.spawn(deadline: PC::Wait::Deadline.after(5.seconds))
+                  if result.is_a?(PC::Spawn::Pending)
+                    result = result.abort(deadline: PC::Wait::Deadline.after(5.seconds))
+                  end
+                  rejected = result.as(PC::Spawn::Rejected)
+                  rejected.error.diagnostic.try(&.native_code).should eq(Errno::ENOEXEC.value.to_i64)
+                  writer << "still owned\n"
+                  writer.flush
+                  reader.gets.should eq("still owned")
+                end
+              end
+              outcomes.send(nil)
+            rescue ex
+              outcomes.send(ex)
+            end
+          end
+        end
+        failures = Array(Exception?).new(4) do
+          select
+          when result = outcomes.receive
+            result
+          when timeout(15.seconds)
+            raise "failed exec stress did not settle"
+          end
+        end
+        failures.compact.should be_empty
+      ensure
+        File.delete(executable)
+        Dir.delete(directory)
       end
     end
 

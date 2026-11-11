@@ -15,8 +15,8 @@ module ProcessControl::Spawn::Status
       store(Wait::Child::Result.new(:completed, @identity, info, :terminated))
     end
 
-    def fail(error : ProcessControl::Error, *, termination : Observation::Termination = Observation::Termination::Unknown) : Nil
-      store(Wait::Child::Result.new(:failed, @identity, termination: termination, failure: Wait::Failure.new(error)))
+    def fail(error : ProcessControl::Error, *, termination : Observation::Termination = Observation::Termination::Unknown, info : Wait::Exit::Info? = nil) : Nil
+      store(Wait::Child::Result.new(:failed, @identity, info, termination: termination, failure: Wait::Failure.new(error)))
     end
 
     def wait_exit(*, deadline : Wait::Deadline = Wait::Deadline.none, cancel : Wait::Cancellation? = nil) : Wait::Child::Result

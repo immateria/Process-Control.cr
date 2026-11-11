@@ -6,12 +6,16 @@ module ProcessControl::Internal::Unix
     @session : Session? = nil
     @child : ProcessControl::Child? = nil
     @abort_started = false
-    @helper_process : ::Process? = nil
+    {% if flag?(:darwin) %}
+      @helper_process : Internal::Darwin::Bootstrap? = nil
+    {% else %}
+      @helper_process : ::Process? = nil
+    {% end %}
     @helper_wait_started = false
     @startup_failure : ProcessControl::Error? = nil
     @startup_streams : Stream::Endpoints? = nil
 
-    def initialize(@launcher : Platform::Unix::Launcher, @plan : Spawn::Plan)
+    def initialize(@launcher : Platform::Unix::Launcher, @plan : Spawn::Plan, @setup : Array(String))
       @pending = Spawn::Pending.new(Diagnostic.new("spawn", "native launch in progress"))
       @pending.on_abort do |deadline, cancel|
         @mutex.synchronize { @aborting = true }
@@ -49,10 +53,7 @@ module ProcessControl::Internal::Unix
         server = UNIXServer.new(path)
         server.read_timeout = @launcher.startup_timeout
         token = Random::Secure.hex(16)
-        process = ::Process.new(@launcher.helper, [path, token, "--", @plan.executable] + @plan.args,
-          env: @plan.environment, clear_env: true, chdir: @plan.directory,
-          input: redirect(@plan.stdio.input), output: redirect(@plan.stdio.output), error: redirect(@plan.stdio.error))
-        @helper_process = process
+        process = create_helper(path, token)
         socket = server.accept
         socket.read_timeout = @launcher.startup_timeout
         greeting = socket.gets(limit: 192, chomp: true).try(&.split)
@@ -62,8 +63,8 @@ module ProcessControl::Internal::Unix
         signal_limit = greeting[3].to_i32
         duplicate_command = greeting[4].to_i32
         streams = endpoints(process, duplicate_command)
-        # Process#wait closes its own stdio. Those owned wrappers were closed
-        # after atomic duplication; the shard's endpoints remain independent.
+        # Helper bookkeeping may close its original stdio wrappers. Those were
+        # closed after atomic duplication; the shard's endpoints are independent.
         collect_helper
         if aborted?
           socket << "ABORT #{token}\n"
@@ -79,10 +80,15 @@ module ProcessControl::Internal::Unix
         unless response && response.size == 3 && response[1] == token
           raise Observation::Failed.new("missing native launch acknowledgment")
         end
-        if response[0] == "REJECTED"
+        if response[0].in?("REJECTED", "SETUP", "CREATION")
           code = response[2].to_i64
           raise Observation::Failed.new("helper did not close after rejection") if socket.gets
-          diagnostic = Diagnostic.new("spawn", "native creation or exec failed", native_domain: "errno", native_code: code, stage: "exec")
+          stage = case response[0]
+                  when "SETUP"    then "setup"
+                  when "CREATION" then "creation"
+                  else                 "exec"
+                  end
+          diagnostic = Diagnostic.new("spawn", "native target #{stage} failed", native_domain: "errno", native_code: code, stage: stage)
           reject(Error.new(diagnostic.message, diagnostic), streams)
           return
         end
@@ -204,25 +210,59 @@ module ProcessControl::Internal::Unix
       end
     end
 
+    private def create_helper(path : String, token : String)
+      arguments = [path, token] + @setup + ["--", @plan.executable] + @plan.args
+      {% if flag?(:darwin) %}
+        process = Internal::Darwin::Bootstrap.new(@launcher.helper, arguments,
+          env: @plan.environment, chdir: @plan.directory,
+          input: redirect(@plan.stdio.input), output: redirect(@plan.stdio.output), error: redirect(@plan.stdio.error))
+        @helper_process = process
+        process.start
+        process
+      {% else %}
+        process = ::Process.new(@launcher.helper, arguments,
+          env: @plan.environment, clear_env: true, chdir: @plan.directory,
+          input: redirect(@plan.stdio.input), output: redirect(@plan.stdio.output), error: redirect(@plan.stdio.error))
+        @helper_process = process
+        process
+      {% end %}
+    end
+
     private def duplicate(io : IO::FileDescriptor, command : Int32) : Stream::Endpoint
-      fd = LibC.fcntl(io.fd, command, 3)
-      raise IO::Error.from_errno("fcntl(F_DUPFD_CLOEXEC)") if fd < 0
+      fd = descriptor_command(io.fd, command, 3)
       begin
-        flags = LibC.fcntl(fd, LibC::F_GETFL, 0)
-        raise IO::Error.from_errno("fcntl(F_GETFL)") if flags < 0
-        if LibC.fcntl(fd, LibC::F_SETFL, flags | LibC::O_NONBLOCK) < 0
-          raise IO::Error.from_errno("fcntl(F_SETFL)")
-        end
+        flags = descriptor_command(fd, LibC::F_GETFL)
+        descriptor_command(fd, LibC::F_SETFL, flags | LibC::O_NONBLOCK)
         result = Stream::Endpoint.new(IO::FileDescriptor.new(fd))
       rescue ex
-        LibC.close(fd)
+        {% if flag?(:darwin) %}
+          Internal::Darwin::Kernel.call(6, fd.to_u64!)
+        {% else %}
+          LibC.close(fd)
+        {% end %}
         raise ex
       end
       io.close
       result
     end
 
-    private def endpoints(process : ::Process, command : Int32) : Stream::Endpoints
+    private def descriptor_command(fd : Int32, command : Int32, argument : Int32 = 0) : Int32
+      {% if flag?(:darwin) %}
+        result = Internal::Darwin::Kernel.call(92, fd.to_u64!, command.to_u64!, argument.to_u64!)
+        unless result.error == 0
+          detail = Diagnostic.new("spawn.descriptor", "Darwin descriptor command failed",
+            native_domain: "errno", native_code: result.error.to_i64, stage: "stdio")
+          raise Observation::Failed.new(detail.message, detail)
+        end
+        result.primary.to_i32!
+      {% else %}
+        value = LibC.fcntl(fd, command, argument)
+        raise IO::Error.from_errno("fcntl") if value < 0
+        value
+      {% end %}
+    end
+
+    private def endpoints(process, command : Int32) : Stream::Endpoints
       prepared = [] of Stream::Endpoint
       input = @plan.stdio.input.is_a?(Stream::Pipe) ? duplicate(process.input, command) : nil
       prepared << input if input

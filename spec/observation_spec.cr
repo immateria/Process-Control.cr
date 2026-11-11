@@ -25,11 +25,6 @@ require "./spec_helper"
       begin
         handle.kill.disposition.should be_a(PC::Control::Refused)
         handle.wait_exit.state.failed?.should be_true
-        {% unless flag?(:darwin) %}
-          expect_raises(PC::Error::Unsupported) do
-            PC::Handle.open(Process.pid, required: PC::Capability::Request.control)
-          end
-        {% end %}
         expected = PC::Identity.new(Process.pid, generation: PC::Identity::Generation.new("unavailable", "expected"))
         expect_raises(PC::Identity::Unverifiable) do
           PC::Handle.open(Process.pid, expected: expected)

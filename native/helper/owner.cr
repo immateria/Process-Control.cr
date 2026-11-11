@@ -1,12 +1,12 @@
 module ProcessControl::Internal::Unix::Owner
   def self.run(argc : Int32, argv : UInt8**) : Int32
-    return 64 if argc < 5 || LibC.strcmp(argv[3], "--".to_unsafe) != 0
+    command, cgroup = command_layout(argc, argv)
+    return 64 if command < 0
     return 65 if close_foreign < 0
     address = LibC::SockaddrUn.new
     address.sun_family = LibC::AF_UNIX
-    bytes = LibC.strlen(argv[1])
-    return 66 if bytes >= sizeof(typeof(address.sun_path))
-    length = bytes.to_i32!
+    length = Text.size(argv[1], sizeof(typeof(address.sun_path)))
+    return 66 if length < 0
     path = pointerof(address.@sun_path).as(UInt8*)
     offset = 0
     while offset < length
@@ -28,31 +28,45 @@ module ProcessControl::Internal::Unix::Owner
     expected = uninitialized UInt8[96]
     start = Frame.new(expected.to_unsafe, 96)
     return 69 unless start.text("START ".to_unsafe) && start.text(argv[2])
-    return 0 if read_line(connection, line.to_unsafe, 192) < 0 || LibC.strcmp(line.to_unsafe, expected.to_unsafe) != 0
+    return 0 if read_line(connection, line.to_unsafe, 192) < 0 || !Text.equal(line.to_unsafe, expected.to_unsafe)
     return 71 if prepare_signals < 0
 
     descriptors = uninitialized Int32[2]
     return 73 if LibC.pipe(descriptors) < 0
     return 74 if cloexec(descriptors.to_unsafe[0]) < 0 || cloexec(descriptors.to_unsafe[1]) < 0
-    target = LibC.fork
+    target = 0
+    {% if flag?(:linux) %}
+      if cgroup != 0
+        fd = open_cgroup(argv[cgroup &+ 1], argv[cgroup &+ 2], argv[cgroup &+ 3])
+        if fd < 0
+          report(connection, "SETUP ".to_unsafe, argv[2], Errno.value.value.to_u64!)
+          return 0
+        end
+        target = clone_into_cgroup(fd)
+      else
+        target = LibC.fork
+      end
+    {% else %}
+      target = LibC.fork
+    {% end %}
     if target < 0
       error = Errno.value.value
       LibC.close(descriptors.to_unsafe[0])
       LibC.close(descriptors.to_unsafe[1])
-      report(connection, "REJECTED ".to_unsafe, argv[2], error.to_u64!)
+      report(connection, "CREATION ".to_unsafe, argv[2], error.to_u64!)
       return 0
     end
     if target == 0
       LibC.close(descriptors.to_unsafe[0])
-      child_failed(descriptors.to_unsafe[1], Errno.value.value) if reset_target_signals < 0
-      Native.execv(argv[4], argv + 4)
-      child_failed(descriptors.to_unsafe[1], Errno.value.value)
+      child_failed(descriptors.to_unsafe[1], Errno.value.value, 1) if reset_target_signals < 0 || setup(argv, command) < 0
+      Native.execv(argv[command], argv + command)
+      child_failed(descriptors.to_unsafe[1], Errno.value.value, 0)
     end
     LibC.close(descriptors.to_unsafe[1])
-    exec_error = 0
+    failure = uninitialized Int32[2]
     received = 0_i64
     loop do
-      received = LibC.read(descriptors.to_unsafe[0], pointerof(exec_error), 4)
+      received = LibC.read(descriptors.to_unsafe[0], failure.to_unsafe, 8)
       break unless received < 0 && Errno.value == Errno::EINTR
     end
     LibC.close(descriptors.to_unsafe[0])
@@ -67,8 +81,9 @@ module ProcessControl::Internal::Unix::Owner
         collected = LibC.waitpid(target, pointerof(status), 0)
         break unless collected < 0 && Errno.value == Errno::EINTR
       end
-      error = received > 0 ? exec_error : Errno::EIO.value
-      report(connection, "REJECTED ".to_unsafe, argv[2], error.to_u64!)
+      error = received == 8 ? failure.to_unsafe[0] : Errno::EIO.value
+      verb = received == 8 && failure.to_unsafe[1] == 1 ? "SETUP ".to_unsafe : "REJECTED ".to_unsafe
+      report(connection, verb, argv[2], error.to_u64!)
       return 0
     end
     connected = report(connection, "STARTED ".to_unsafe, argv[2], target.to_u64!) == 0

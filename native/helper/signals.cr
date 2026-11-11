@@ -9,9 +9,12 @@ module ProcessControl::Internal::Unix::Owner
     LibC.sigaction(LibC::SIGPIPE, pointerof(action), nil)
   end
 
-  def self.child_failed(fd : Int32, error : Int32) : NoReturn
+  def self.child_failed(fd : Int32, error : Int32, stage : Int32) : NoReturn
+    failure = uninitialized Int32[2]
+    failure.to_unsafe[0] = error
+    failure.to_unsafe[1] = stage
     loop do
-      sent = LibC.write(fd, pointerof(error), 4)
+      sent = LibC.write(fd, failure.to_unsafe, 8)
       break unless sent < 0 && Errno.value == Errno::EINTR
     end
     LibC._exit(127)

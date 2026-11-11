@@ -1,3 +1,5 @@
+require "./text"
+
 module ProcessControl::Internal::Unix::Owner
   struct Frame
     @used = 0
@@ -6,15 +8,16 @@ module ProcessControl::Internal::Unix::Owner
     end
 
     def text(value : UInt8*) : Bool
-      bytes = LibC.strlen(value)
-      return false if @capacity <= 0 || bytes >= @capacity.to_u64!
-      count = bytes.to_i32!
+      return false if @capacity <= 0 || @used >= @capacity
+      count = Text.size(value, @capacity &- @used)
+      return false if count < 0
       return false if @used >= @capacity &- count
       offset = 0
       while offset < count
         @data[@used] = value[offset]
         @used &+= 1
         offset &+= 1
+        asm("" ::: "memory" : "volatile")
       end
       @data[@used] = 0_u8
       true
@@ -34,40 +37,19 @@ module ProcessControl::Internal::Unix::Owner
         count &-= 1
         @data[@used] = digits.to_unsafe[count]
         @used &+= 1
+        asm("" ::: "memory" : "volatile")
       end
       @data[@used] = 0_u8
       true
     end
-  end
 
-  def self.send_line(fd : Int32, line : UInt8*) : Int32
-    length = LibC.strlen(line)
-    while length > 0
-      sent = LibC.write(fd, line, length)
-      next if sent < 0 && Errno.value == Errno::EINTR
-      return -1 if sent <= 0
-      line += sent
-      length &-= sent.to_u64!
-    end
-    0
-  end
-
-  def self.read_line(fd : Int32, line : UInt8*, capacity : Int32) : Int32
-    used = 0
-    while used &+ 1 < capacity
-      byte = uninitialized UInt8
-      got = LibC.read(fd, pointerof(byte), 1)
-      next if got < 0 && Errno.value == Errno::EINTR
-      return -1 if got <= 0
-      return -1 if byte == 0
-      if byte == 10
-        line[used] = 0_u8
-        return 0
+    def signed(value : Int64) : Bool
+      if value < 0
+        text("-".to_unsafe) && integer((0_i64 &- value).to_u64!)
+      else
+        integer(value.to_u64!)
       end
-      line[used] = byte
-      used &+= 1
     end
-    -1
   end
 
   # Decimal UInt64 with an explicit bound; no checked arithmetic or exceptions.
@@ -103,7 +85,7 @@ module ProcessControl::Internal::Unix::Owner
     end
     return -1 if length == 0 || cursor.value != 32
     cursor.value = 0_u8
-    matched = LibC.strcmp(actual, token) == 0
+    matched = Text.equal(actual, token)
     cursor += 1
     return -1 unless number(pointerof(cursor), sequence) && cursor.value == 32
     cursor += 1

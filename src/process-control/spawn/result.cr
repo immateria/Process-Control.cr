@@ -19,13 +19,17 @@ module ProcessControl::Spawn
   alias Result = Started | Rejected | Pending
 
   class Pending
+    module Owner
+    end
+
     @mutex = Mutex.new
     @terminal : (Started | Rejected)? = nil
     @transferred = false
     @aborting = false
     @callbacks = [] of Proc(Nil)
+    @callback_failures = [] of ProcessControl::Diagnostic
     @aborter : Proc(Wait::Deadline, Wait::Cancellation?, Result)? = nil
-    @retained : Registration? = nil
+    @retained : Owner? = nil
     @cleanup_result : Control::Release::Result? = nil
 
     def initialize(@diagnostic)
@@ -43,11 +47,15 @@ module ProcessControl::Spawn
       @mutex.synchronize { @cleanup_result }
     end
 
+    def callback_failures : Array(ProcessControl::Diagnostic)
+      @mutex.synchronize { @callback_failures.dup }
+    end
+
     def note_cleanup(result : Control::Release::Result) : Nil
       @mutex.synchronize { @cleanup_result = result }
     end
 
-    def retain(owner : Registration) : Nil
+    def retain(owner : Owner) : Nil
       @mutex.synchronize { @retained = owner }
     end
 
@@ -63,7 +71,7 @@ module ProcessControl::Spawn
           copied
         end
       end
-      callbacks.each(&.call)
+      notify(callbacks)
     end
 
     def on_settle(&callback : -> Nil) : Nil
@@ -75,7 +83,7 @@ module ProcessControl::Spawn
           false
         end
       end
-      callback.call if settled
+      notify([callback]) if settled
     end
 
     def on_abort(&aborter : Wait::Deadline, Wait::Cancellation? -> Result) : Nil
@@ -120,7 +128,12 @@ module ProcessControl::Spawn
         @callbacks.clear
         copied
       end
-      callbacks.each(&.call)
+      notify(callbacks)
+    end
+
+    private def notify(callbacks : Array(Proc(Nil))) : Nil
+      failures = Internal::Callbacks.run("spawn.settle", callbacks)
+      @mutex.synchronize { @callback_failures.concat(failures) }
     end
 
     def close : Control::Release::Result

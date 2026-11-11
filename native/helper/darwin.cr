@@ -1,0 +1,7 @@
+require "../../src/process-control/internal/darwin/kernel"
+require "./darwin/system"
+require "./darwin/signals"
+require "./darwin/descriptors"
+require "./darwin/setup"
+require "./darwin/io"
+require "./darwin/owner"

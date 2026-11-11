@@ -40,15 +40,17 @@ module ProcessControl::Spawn
     struct Rejected
       getter result : Spawn::Rejected
 
-      def initialize(error : ProcessControl::Error)
-        @result = Spawn::Rejected.new(error)
+      def initialize(error : ProcessControl::Error, cleanup = Control::Release::Result.complete, attempted = false)
+        @result = Spawn::Rejected.new(error, cleanup, attempted)
       end
     end
 
     struct Pending
       getter owner : Spawn::Pending
 
-      def initialize(@owner)
+      getter? wait : Bool
+
+      def initialize(@owner, *, @wait = true)
       end
     end
 
@@ -61,6 +63,8 @@ module ProcessControl::Spawn
     def self.default : Launcher?
       {% if flag?(:darwin) || (flag?(:linux) && !flag?(:android)) %}
         Platform::Unix::Launcher.default
+      {% elsif flag?(:windows) %}
+        Platform::Windows::Launcher.new
       {% else %}
         nil
       {% end %}

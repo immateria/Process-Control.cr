@@ -1,5 +1,7 @@
 module ProcessControl::Spawn
   class Registration
+    include Pending::Owner
+
     @mutex = Mutex.new
     @consumed = false
     @aborting = false
