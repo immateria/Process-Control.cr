@@ -9,7 +9,7 @@ the lab's evidence. Test receipts for the shard live outside the repository.
 | Deadlines, cancellation, status fan-out and typed control outcomes | Implemented                                                            | Core/provider tests                                                                                     |
 | Handle ownership, duplication and pending control leases           | Implemented                                                            | Provider tests and Unix helper views                                                                    |
 | Immutable command and registration/pending ownership               | Implemented                                                            | Core/provider tests and Unix launch                                                                     |
-| Target launch, stop, kill, signals, suspend/resume                 | Crystal helper; direct Darwin bootstrap and target operations          | Darwin 24 and Linux, with POSIX stop/continue; rewrite qualification below                               |
+| Target launch, stop, kill, signals, suspend/resume                 | Crystal helper; direct Darwin bootstrap and target operations          | Darwin 24/25 admission and Linux; see macOS qualification below                               |
 | Unix target setup                                                  | Session and finite POSIX limits                                        | macOS and Linux                                                                                         |
 | Native pipe endpoints and bounded binary capture                   | Implemented                                                            | Unix native tests and Windows code generation                                                           |
 | Existing-process observation                                       | Unix point query; Darwin Mach reference observation                    | Darwin sampled queries can identify a present zombie, and checked acquisition adds PID-version evidence |
@@ -208,7 +208,8 @@ crystal run scripts/check-darwin.cr
 The runner builds two unmanaged Crystal fixtures outside the repository and
 audits their unoptimized and release LLVM. It records source, executable and IR
 digests with the compiler description. The source manifest covers local Crystal
-files under `src`, `native` and `spec`, plus the runner and auditor. The runner
+files under `src`, `native` and `spec`, plus the runner and auditor, and separately
+records the installed Native-Kernel dependency's source digests. The runner
 checks those inputs again after execution. Both fixtures now use the direct
 Darwin trap engine. Their LLVM audits allow no external function imports and
 only the exact approved trap and memory-barrier assembly. After native linking
@@ -310,3 +311,57 @@ intrinsics remain refused. No native function allowance was added.
 
 The workspace's `docs/reviews/process-control-darwin-kernel-2026-11-10.md`
 indexes final source-bound receipts, review fixes and qualification limits.
+
+## Native-Kernel extraction on 2026-11-10
+
+Reusable Darwin ARM64/x86-64 kernel entry, result conventions, ABI records and
+stateless descriptor, process, resource, signal, event and Mach primitives now
+come from `native-kernel` (`immateria/Native-Kernel.cr`). Process-Control retains
+identity and checked authority, caller-context ownership, helper protocol,
+target signal reset policy, collection and cleanup decisions. This dependency
+does not migrate PTY or File-Lock.
+
+The dependency's raw require is limited to Darwin ARM64/x86-64. Source and audit
+metadata remain portable, so Linux and Windows still compile Process-Control's
+own profiles. Build tooling fingerprints the actual installed dependency source
+bytes and assembly metadata, supplies its path to external helper builds, and
+retains both LLVM audits and the final Darwin empty-import check. Qualification
+receipts separately enumerate dependency digests and recheck them after execution.
+The pre-extraction example counts and source manifests above remain historical
+evidence; they do not establish qualification of the extracted revision.
+
+
+### Extraction qualification on 2026-11-10
+
+| Final check | Result |
+| --- | --- |
+| Native-Kernel, Crystal 1.22.2 and 1.10.0, ARM64 and Rosetta x86-64 | 14 specs per profile; unmanaged development/release audits, empty imports and execution pass |
+| Process-Control, both compilers and both macOS architectures | 118 specs per profile; helper audits and empty imports pass |
+| Original Process-Control checkout, current ARM64 compiler | 118 specs pass with the workspace-installed dependency |
+| Delegated Linux ARM64, mandatory pidfd and cgroup birth | 96 specs pass |
+| Native Darwin reuse/interruption, both compilers | Three cases pass per compiler; actual PID reuse and blocking EINTR |
+| Current cross-target matrix | Process-Control builds all eight; Native-Kernel builds both Darwin cells and refuses the other six raw profiles as specified |
+
+All executed suites have zero failures, errors or pending cases. Each native
+qualification manifest binds 124 local inputs and 15 Native-Kernel sources;
+all hashes match the delivered source and artifacts. Dependency source/profile
+mutation changes the helper fingerprint, and a builder with stale embedded
+sources refuses installation. Fresh independent core, build and integration
+reviews found no remaining source blocker. Raw receipts remain outside the
+repositories; the workspace review indexes them.
+
+## macOS process profiles on 2026-11-11
+
+The bootstrap now selects Native-Kernel's audited Darwin 24/25 spawn profile.
+Unknown majors remain refused before launch effects. The [macOS profile](macos.md)
+records the restricted attribute subset, source pins and complete consumer CI
+gate. Group/session queries are stateless dependency primitives; the held-target
+session fixture checks the existing `Spawn::Session` behavior. A native group
+controller and descendant containment are not introduced by this batch.
+
+The workflow qualifies all eight native macOS 15/26, ARM64/Intel and
+Crystal 1.10.0/1.22.2 combinations against an exact dependency commit. A profile
+is qualified only by a passing source-bound receipt. Historical counts above
+remain evidence for their original revisions. PID reuse/interruption, foreign
+credentials and protected-target behavior retain their separately recorded
+scope; the ordinary CI suite does not imply those qualifications.

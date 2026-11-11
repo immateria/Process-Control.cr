@@ -1,8 +1,9 @@
 # Working on Process-Control
 
 This is an independent Crystal shard. The workspace's root guide applies too.
-Do not add runtime shard dependencies, remotes, compatibility aliases or public
-types with compound leaf names. Keep each concern's implementation in its own
+The approved runtime dependency is `native-kernel` under
+`immateria/Native-Kernel.cr`; do not add others. Do not add remotes, compatibility
+aliases or public types with compound leaf names. Keep each concern's implementation in its own
 file under `src/process-control/`.
 
 Read `docs/contracts.md` and `docs/support.md` before changing lifecycle behavior.
@@ -34,11 +35,22 @@ and only the exact approved trap and memory-barrier assembly. Its release link
 uses dead stripping and must have empty `nm -u` output. Linux helper bindings
 stay out of the library's require graph.
 
-Darwin process operations use direct BSD syscalls and Mach traps on ARM64 and
-x86-64. Task audit tokens use explicit MIG messages with a dedicated reply right
-per read. The helper bootstrap's private spawn layout is gated to Darwin 24;
+Darwin process operations use Native-Kernel's stateless BSD syscall and Mach
+primitives on ARM64 and x86-64. Kernel entry, ABI records and reusable primitives
+belong in that dependency. Identity, authority, context ownership, collection,
+target signal reset policy and helper protocol stay here. Do not require managed
+source/audit metadata from an unmanaged entry. The helper fingerprint includes
+actual dependency source bytes and assembly audit metadata; preserve that closure
+when changing build paths. Portable metadata must remain requireable on Linux
+and Windows, whose raw Darwin profiles are unsupported.
+
+Task audit tokens use explicit MIG messages with a dedicated reply right
+per read. The helper bootstrap selects Native-Kernel's audited private spawn
+profile for Darwin 24 or 25 before creating descriptors or children;
 Mach message and audit-token signaling guards require Darwin 22 and 24
-respectively. Audit another release before extending these guards. The managed
+respectively. Audit and qualify another release before extending these guards.
+Read `docs/macos.md` for the restricted spawn profile and consumer CI boundary.
+The managed
 Crystal runtime and ordinary I/O still use platform libraries. Apple's linker
 also requires the Darwin helper to load libSystem even though it imports no
 external symbols. Check the actual native operation before advertising a

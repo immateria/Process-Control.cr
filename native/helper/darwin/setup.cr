@@ -50,7 +50,7 @@ module ProcessControl::Internal::Unix::Owner
            lower <= upper && upper < 9223372036854775807_u64
       return -22
     end
-    limits = System::Limit.new(lower, upper)
+    limits = ::Native::Kernel::Darwin::Resource::Limit.new(lower, upper)
     result = System.set_limit(resource, pointerof(limits))
     return result if result < 0
     result = System.get_limit(resource, pointerof(limits))

@@ -1,28 +1,17 @@
 module ProcessControl::Internal::Unix::Owner::System
-  # XNU __user64_sigaction includes the trampoline before mask and flags.
-  struct Action
-    @handler : UInt64
-    @trampoline : UInt64
-    @mask : UInt32
-    @flags : Int32
-
-    def initialize(@handler, @trampoline, @mask, @flags)
-    end
-  end
-
   def self.signal_action(signal : Int32, handler : UInt64, trampoline : UInt64 = 0_u64,
                          flags : Int32 = 0, mask : UInt32 = 0_u32) : Int32
-    action = Action.new(handler, trampoline, mask, flags | 0x0400)
-    value(Kernel.call(46, signal.to_u64!, pointerof(action).address, 0_u64)).to_i32!
+    action = ::Native::Kernel::Darwin::Signal::Action.new(handler, trampoline, mask, flags | 0x0400)
+    value(::Native::Kernel::Darwin::Signal.action(signal, pointerof(action))).to_i32!
   end
 
   def self.clear_signal_mask : Int32
     mask = 0_u32
-    value(Kernel.call(48, 3_u64, pointerof(mask).address, 0_u64)).to_i32!
+    value(::Native::Kernel::Darwin::Signal.mask(3, pointerof(mask), Pointer(UInt32).null)).to_i32!
   end
 
   def self.sigreturn(context : Void*, style : Int32, token : UInt64) : NoReturn
-    Kernel.call(184, context.address, style.to_u64!, token)
+    ::Native::Kernel::Darwin::Signal.restore(context, style, token)
     exit(126)
   end
 end

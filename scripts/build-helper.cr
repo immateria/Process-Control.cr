@@ -26,6 +26,8 @@ status = Process.run(compiler, ["--version"], output: version, error: STDERR)
 unless status.success? && version.to_s.strip == Crystal::DESCRIPTION.strip
   abort "Select the same Crystal compiler used to run this builder with --compiler PATH."
 end
+ProcessControl::Platform::Unix::Helper.verify_sources!
+environment = ProcessControl::Platform::Unix::Helper.compiler_environment(compiler)
 destination ||= ProcessControl::Platform::Unix::Helper.path
 FileUtils.mkdir_p(File.dirname(destination), mode: 0o700)
 workspace = File.join(File.dirname(destination), "build-#{Random::Secure.hex(12)}")
@@ -43,7 +45,7 @@ begin
   development_args.concat([ProcessControl::Platform::Unix::Helper.source, "-o", development])
   status = Process.run(compiler,
     development_args,
-    chdir: workspace, output: development_output, error: STDERR)
+    chdir: workspace, env: environment, output: development_output, error: STDERR)
   unless status.success?
     STDERR << development_output.to_s
     abort "Native helper development compilation failed."
@@ -71,7 +73,7 @@ begin
   release_args.concat([ProcessControl::Platform::Unix::Helper.source, "-o", temporary])
   release_output = IO::Memory.new
   status = Process.run(compiler, release_args,
-    chdir: workspace, output: release_output, error: STDERR)
+    chdir: workspace, env: environment, output: release_output, error: STDERR)
   unless status.success?
     STDERR << release_output.to_s
     abort "Native helper compilation failed."
@@ -95,7 +97,9 @@ begin
       abort "Darwin helper imports external library symbols:\n#{imports}"
     end
   {% end %}
+  ProcessControl::Platform::Unix::Helper.verify_sources!
   File.write(destination + ".audit.json", {"source" => ProcessControl::Platform::Unix::Helper.fingerprint,
+                                           "dependency_sources" => Native::Kernel::Source::FILES.transform_values { |bytes| Digest::SHA256.hexdigest(bytes) },
                                            "compiler" => Crystal::DESCRIPTION, "target" => ProcessControl::Platform::Unix::Helper::TARGET,
                                            "ir" => Digest::SHA256.hexdigest(ir), "development_ir" => Digest::SHA256.hexdigest(development_ir),
                                            "native_symbols" => native_symbols.to_a.sort, "assembly" => assembly.to_a.sort}.to_json)

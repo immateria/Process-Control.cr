@@ -236,7 +236,7 @@ module ProcessControl::Internal::Unix
         result = Stream::Endpoint.new(IO::FileDescriptor.new(fd))
       rescue ex
         {% if flag?(:darwin) %}
-          Internal::Darwin::Kernel.call(6, fd.to_u64!)
+          ::Native::Kernel::Darwin::Descriptor.close(fd)
         {% else %}
           LibC.close(fd)
         {% end %}
@@ -248,7 +248,7 @@ module ProcessControl::Internal::Unix
 
     private def descriptor_command(fd : Int32, command : Int32, argument : Int32 = 0) : Int32
       {% if flag?(:darwin) %}
-        result = Internal::Darwin::Kernel.call(92, fd.to_u64!, command.to_u64!, argument.to_u64!)
+        result = ::Native::Kernel::Darwin::Descriptor.fcntl(fd, command, argument)
         unless result.error == 0
           detail = Diagnostic.new("spawn.descriptor", "Darwin descriptor command failed",
             native_domain: "errno", native_code: result.error.to_i64, stage: "stdio")

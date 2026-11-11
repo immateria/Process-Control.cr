@@ -1,9 +1,11 @@
-require "./kernel/process"
+require "./context"
 
 module ProcessControl::Internal::Darwin
   # The managed parent creates only the audited, unmanaged helper. The target
   # remains the helper's child and its status never comes from this owner.
   class Bootstrap
+    alias Kernel = ::Native::Kernel::Darwin
+
     getter pid : Int64 = 0_i64
     @started = false
     @runtime_channel : Channel(Int32)? = nil
@@ -20,19 +22,17 @@ module ProcessControl::Internal::Darwin
       @stdio = {input, output, error}
     end
 
-    def self.preflight! : Nil
-      unless Kernel::Process.major == 24
-        raise Error::Unsupported.new("direct helper bootstrap requires the qualified Darwin 24 spawn ABI")
-      end
+    def self.preflight!(major : Int32 = Context.major) : Kernel::Spawn::Profile
+      Kernel::Spawn.profile(major) ||
+        raise Error::Unsupported.new("direct helper bootstrap requires an audited Darwin 24 or 25 spawn ABI")
     end
 
     def start : Nil
       raise Error::Ownership.new("helper bootstrap was already started") if @started
       @started = true
-      # xnu-11417.101.15/bsd/sys/spawn_internal.h and kern_exec.c, read
-      # 2026-11-10: the kernel copies a private 192-byte attribute prefix and
-      # 1040-byte action records. Other major releases need a separate ABI audit.
-      self.class.preflight!
+      # Native-Kernel supplies the audited fixed-copy layout. This consumer
+      # owns release admission and the restricted zero-filled helper profile.
+      profile = self.class.preflight!
       argv = [@helper] + @arguments
       environment = @env.map { |key, value| "#{key}=#{value}" }
       (argv + environment + [@chdir]).each do |text|
@@ -40,25 +40,28 @@ module ProcessControl::Internal::Darwin
       end
       argv_pointers = argv.map(&.to_unsafe) + [Pointer(UInt8).null]
       env_pointers = environment.map(&.to_unsafe) + [Pointer(UInt8).null]
-      @stdio.each_with_index { |spec, index| prepare_stdio(spec, index) }
-      add_path_action(5, 0, @chdir)
-      actions = Bytes.new(8 + @actions.size * 1040, 0_u8)
-      actions.to_unsafe.as(Int32*)[0] = @actions.size
-      actions.to_unsafe.as(Int32*)[1] = @actions.size
-      @actions.each_with_index { |action, index| actions[8 + index * 1040, 1040].copy_from(action) }
-      attributes = Bytes.new(192, 0_u8)
+      @stdio.each_with_index { |spec, index| prepare_stdio(spec, index, profile) }
+      add_path_action(profile, 5, 0, @chdir)
+      actions = Bytes.new(profile.actions_header_size + @actions.size * profile.action_size, 0_u8)
+      (actions.to_unsafe + profile.actions_capacity_offset).as(Int32*).value = @actions.size
+      (actions.to_unsafe + profile.actions_count_offset).as(Int32*).value = @actions.size
+      @actions.each_with_index do |action, index|
+        actions[profile.actions_header_size + index * profile.action_size, profile.action_size].copy_from(action)
+      end
+      attributes = Bytes.new(profile.attributes_size, 0_u8)
       # SETSIGDEF | SETSIGMASK | CLOEXEC_DEFAULT. The trusted helper gates target
       # creation on authenticated START; it must be able to exit on startup EOF.
-      attributes.to_unsafe.as(UInt16*).value = 0x400c_u16
-      attributes.to_unsafe.as(UInt32*)[1] = 0xfffefeff_u32 # all except SIGKILL/SIGSTOP
-      descriptor = StaticArray(UInt64, 18).new(0_u64)
-      descriptor[0] = attributes.size.to_u64
-      descriptor[1] = attributes.to_unsafe.address
-      descriptor[2] = actions.size.to_u64
-      descriptor[3] = actions.to_unsafe.address
+      (attributes.to_unsafe + profile.flags_offset).as(UInt16*).value = 0x400c_u16
+      (attributes.to_unsafe + profile.defaults_offset).as(UInt32*).value = 0xfffefeff_u32 # all except SIGKILL/SIGSTOP
+      (attributes.to_unsafe + profile.mask_offset).as(UInt32*).value = 0_u32
+      descriptor = Bytes.new(profile.descriptor_size, 0_u8)
+      (descriptor.to_unsafe + profile.descriptor_attribute_size_offset).as(UInt64*).value = attributes.size.to_u64
+      (descriptor.to_unsafe + profile.descriptor_attributes_offset).as(UInt64*).value = attributes.to_unsafe.address
+      (descriptor.to_unsafe + profile.descriptor_actions_size_offset).as(UInt64*).value = actions.size.to_u64
+      (descriptor.to_unsafe + profile.descriptor_actions_offset).as(UInt64*).value = actions.to_unsafe.address
       child = 0
-      result = Kernel.call(244, pointerof(child).address, @helper.to_unsafe.address,
-        descriptor.to_unsafe.address, argv_pointers.to_unsafe.address, env_pointers.to_unsafe.address)
+      result = Kernel::Spawn.create(pointerof(child), @helper.to_unsafe, descriptor.to_unsafe.as(Void*),
+        argv_pointers.to_unsafe, env_pointers.to_unsafe)
       raise native_error("create", result.error) unless result.error == 0 && child > 0
       @pid = child.to_i64
       # Register only for runtime bookkeeping. This PID-keyed status is never
@@ -102,12 +105,12 @@ module ProcessControl::Internal::Darwin
       close
     end
 
-    private def prepare_stdio(spec : ::Process::Stdio, target : Int32) : Nil
+    private def prepare_stdio(spec : ::Process::Stdio, target : Int32, profile : Kernel::Spawn::Profile) : Nil
       case spec
       when ::Process::Redirect
         case spec
         in .pipe?
-          pipe = Kernel.call(42)
+          pipe = Kernel::Descriptor.pipe
           raise native_error("pipe", pipe.error) unless pipe.error == 0
           first = pipe.primary.to_i32!
           second = pipe.secondary.to_i32!
@@ -115,13 +118,13 @@ module ProcessControl::Internal::Darwin
           first = preserve_stdio(first)
           second = preserve_stdio(second)
           {first, second}.each do |fd|
-            result = Kernel.call(92, fd.to_u64!, 2_u64, 1_u64)
+            result = Kernel::Descriptor.fcntl(fd, 2, 1)
             raise native_error("cloexec", result.error) unless result.error == 0
           end
           parent_fd, child_fd = target == 0 ? {second, first} : {first, second}
-          flags = Kernel.call(92, parent_fd.to_u64!, 3_u64)
+          flags = Kernel::Descriptor.fcntl(parent_fd, 3)
           raise native_error("flags", flags.error) unless flags.error == 0
-          nonblocking = Kernel.call(92, parent_fd.to_u64!, 4_u64, flags.primary.to_u64! | 4_u64)
+          nonblocking = Kernel::Descriptor.fcntl(parent_fd, 4, flags.primary.to_i32! | 4)
           raise native_error("nonblocking", nonblocking.error) unless nonblocking.error == 0
           io = IO::FileDescriptor.new(parent_fd)
           @raw.delete(parent_fd)
@@ -130,13 +133,13 @@ module ProcessControl::Internal::Darwin
           when 1 then @output = io
           when 2 then @error = io
           end
-          add_fd_action(2, child_fd, target)
+          add_fd_action(profile, 2, child_fd, target)
         in .close?
-          add_path_action(0, target, "/dev/null", target == 0 ? 0 : 1)
+          add_path_action(profile, 0, target, "/dev/null", target == 0 ? 0 : 1)
         in .inherit?
-          result = Kernel.call(92, target.to_u64!, 1_u64)
+          result = Kernel::Descriptor.fcntl(target, 1)
           if result.error == 0
-            add_fd_action(3, target)
+            add_fd_action(profile, 3, target)
           elsif result.error != 9
             raise native_error("inherit", result.error)
           end
@@ -144,11 +147,11 @@ module ProcessControl::Internal::Darwin
       when IO::FileDescriptor
         # Pin the supplied descriptor before arranging any stdio action. This
         # also avoids action-order cycles when a supplied fd is itself 0..2.
-        duplicate = Kernel.call(92, spec.fd.to_u64!, 67_u64, 3_u64)
+        duplicate = Kernel::Descriptor.fcntl(spec.fd, 67, 3)
         raise native_error("duplicate", duplicate.error) unless duplicate.error == 0
         fd = duplicate.primary.to_i32!
         @raw << fd
-        add_fd_action(2, fd, target)
+        add_fd_action(profile, 2, fd, target)
       else
         raise Error::Unsupported.new("helper bootstrap requires native descriptor stdio")
       end
@@ -156,12 +159,12 @@ module ProcessControl::Internal::Darwin
 
     private def preserve_stdio(fd : Int32) : Int32
       return fd if fd >= 3
-      duplicate = Kernel.call(92, fd.to_u64!, 67_u64, 3_u64)
+      duplicate = Kernel::Descriptor.fcntl(fd, 67, 3)
       raise native_error("duplicate", duplicate.error) unless duplicate.error == 0
       pinned = duplicate.primary.to_i32!
       @raw << pinned
       @raw.delete(fd)
-      closed = Kernel.call(6, fd.to_u64!)
+      closed = Kernel::Descriptor.close(fd)
       unless closed.error == 0
         @cleanup_failure ||= Diagnostic.new("helper.close", "temporary stdio descriptor close failed",
           native_domain: "errno", native_code: closed.error.to_i64, stage: "cleanup")
@@ -170,24 +173,27 @@ module ProcessControl::Internal::Darwin
       pinned
     end
 
-    private def add_fd_action(kind : Int32, fd : Int32, destination : Int32 = 0) : Nil
-      action = Bytes.new(1040, 0_u8)
-      action.to_unsafe.as(Int32*)[0] = kind
-      action.to_unsafe.as(Int32*)[1] = fd
-      action.to_unsafe.as(Int32*)[2] = destination
+    private def add_fd_action(profile : Kernel::Spawn::Profile, kind : Int32, fd : Int32, destination : Int32 = 0) : Nil
+      action = Bytes.new(profile.action_size, 0_u8)
+      (action.to_unsafe + profile.action_type_offset).as(Int32*).value = kind
+      (action.to_unsafe + profile.action_fd_offset).as(Int32*).value = fd
+      (action.to_unsafe + profile.action_destination_offset).as(Int32*).value = destination
       @actions << action
     end
 
-    private def add_path_action(kind : Int32, fd : Int32, path : String, flags : Int32 = 0) : Nil
-      raise ArgumentError.new("helper action pathname exceeds 1023 bytes") if path.bytesize >= 1024
-      action = Bytes.new(1040, 0_u8)
-      action.to_unsafe.as(Int32*)[0] = kind
-      action.to_unsafe.as(Int32*)[1] = fd
+    private def add_path_action(profile : Kernel::Spawn::Profile, kind : Int32, fd : Int32, path : String, flags : Int32 = 0) : Nil
+      if path.bytesize >= profile.path_capacity
+        raise ArgumentError.new("helper action pathname exceeds #{profile.path_capacity - 1} bytes")
+      end
+      action = Bytes.new(profile.action_size, 0_u8)
+      (action.to_unsafe + profile.action_type_offset).as(Int32*).value = kind
+      (action.to_unsafe + profile.action_fd_offset).as(Int32*).value = fd
       offset = if kind == 0
-                 action.to_unsafe.as(Int32*)[2] = flags
-                 14
+                 (action.to_unsafe + profile.open_flags_offset).as(Int32*).value = flags
+                 (action.to_unsafe + profile.open_mode_offset).as(UInt16*).value = 0_u16
+                 profile.open_path_offset
                else
-                 8
+                 profile.chdir_path_offset
                end
       action[offset, path.bytesize].copy_from(path.to_slice)
       @actions << action
@@ -199,7 +205,7 @@ module ProcessControl::Internal::Darwin
       descriptors = @raw
       @raw = [] of Int32
       descriptors.each do |fd|
-        result = Kernel.call(6, fd.to_u64!)
+        result = Kernel::Descriptor.close(fd)
         unless result.error == 0
           @cleanup_failure ||= Diagnostic.new("helper.close", "raw descriptor close failed",
             native_domain: "errno", native_code: result.error.to_i64, stage: "cleanup")

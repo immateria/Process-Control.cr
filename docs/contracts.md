@@ -19,9 +19,10 @@ control, exit-wait or checked-binding request on Darwin selects
 `Binding::Checked` means the native action validates its target identity while
 acting. An explicit retained or delegated binding requirement does not match it.
 `Platform::Darwin.available?` checks the kernel-release guard for audit-token
-signaling, not target permission. The ARM64 and x86-64 backend enters BSD syscalls
-and Mach traps directly. Its task-message guard requires Darwin 22 (macOS 13)
-or later; its audit-token signal guard requires Darwin 24 (macOS 15) or later.
+signaling, not target permission. The ARM64 and x86-64 backend uses Native-Kernel's
+stateless BSD syscall and Mach primitives. Process-Control owns the identity,
+authority and context checks around them. Its task-message guard requires Darwin
+22 (macOS 13) or later; its audit-token signal guard requires Darwin 24 (macOS 15) or later.
 These are source-derived availability floors, with native scope recorded in
 [support](support.md).
 
@@ -148,22 +149,31 @@ installing the executable. This is a compiler-artifact check, not a proof of all
 native ABI or operating-system behavior.
 The helper forks and reaps the logical target and serializes signaling with
 reaping. It never signals after target reaping. On Darwin its fork, wait, signal,
-descriptor, setup and exec operations use direct kernel traps. On Linux those
-operations use C-ABI system interfaces. The Darwin helper's unoptimized and
+descriptor, setup and exec operations use Native-Kernel's direct kernel primitives.
+On Linux those operations use C-ABI system interfaces. The Darwin helper's unoptimized and
 release LLVM permit no external function imports and only the exact approved
 trap and memory-barrier assembly. The dead-stripped release executable must
 also have empty `nm -u` output. Apple's linker requires a libSystem loader entry
 even for this executable with no undefined imports.
 
+Helper cache identity includes the installed Native-Kernel source bytes and
+assembly audit metadata as well as Process-Control's helper/build/audit inputs.
+The dependency's managed source/audit metadata is used by build tooling and stays
+outside the unmanaged runtime require graph. Dependency paths are supplied
+explicitly when the builder compiles from an external directory. Native
+qualification receipts enumerate dependency source digests and recheck them
+after execution.
+
 The managed Darwin parent creates the helper with a direct spawn syscall and
-private attribute/action layouts, gated to Darwin 24. The trusted unmanaged
+private attribute/action layouts selected from Native-Kernel's Darwin 24/25
+profiles. Preflight refuses an unknown major before descriptor or child creation.
+The trusted unmanaged
 helper runs immediately and waits for the exact authenticated `START` frame
 before creating the logical target. Control-channel EOF before that frame ends
 the helper without creating a target. After target creation the helper remains
 its parent and collector even if the peer disappears. That layout and startup
-cleanup require their own qualification; the
-[rewrite record](support.md#direct-darwin-rewrite-on-2026-11-10) tracks the open
-checks. Linux creates the helper through Crystal's process API. The runtime
+cleanup require their own qualification; the [macOS profile](macos.md) describes
+the full consumer gate. Linux creates the helper through Crystal's process API. The runtime
 still reaps the helper for bookkeeping; its numeric-PID status is ignored for
 target attribution. Stdio is separate from the socket protocol. Parent pipe
 endpoints are atomically duplicated before their original helper wrappers are
