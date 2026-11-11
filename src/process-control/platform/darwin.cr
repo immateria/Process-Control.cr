@@ -1,4 +1,6 @@
-require "../internal/darwin/abi"
+require "native-kernel/darwin"
+require "../internal/darwin/context"
+require "../internal/darwin/mach"
 require "../internal/darwin/inspection"
 require "../internal/darwin/token"
 require "../internal/darwin/driver"

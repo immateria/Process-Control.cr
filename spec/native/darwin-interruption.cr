@@ -7,7 +7,7 @@ require "../../native/helper/protocol"
 require "../../native/helper/darwin"
 
 module Fixture::Darwin::Interruption
-  alias Kernel = ProcessControl::Internal::Darwin::Kernel
+  alias Kernel = ::Native::Kernel::Darwin::Raw
   alias System = ProcessControl::Internal::Unix::Owner::System
   alias Frame = ProcessControl::Internal::Unix::Owner::Frame
 
@@ -54,7 +54,7 @@ module Fixture::Darwin::Interruption
 
   def self.poll_event(fd : Int32, changes : Native::Kevent64*, nchanges : Int32,
                       events : Native::Kevent64*, nevents : Int32, flags : UInt32,
-                      timeout : Native::Timespec* = Pointer(Native::Timespec).null) : Kernel::Result
+                      timeout : Native::Timespec* = Pointer(Native::Timespec).null) : ::Native::Kernel::Darwin::Result
     Kernel.call(369, fd.to_u64!, changes.address, nchanges.to_u64!, events.address,
       nevents.to_u64!, flags.to_u64!, timeout.address)
   end

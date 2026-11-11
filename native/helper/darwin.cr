@@ -1,4 +1,4 @@
-require "../../src/process-control/internal/darwin/kernel"
+require "native-kernel/darwin"
 require "./darwin/system"
 require "./darwin/signals"
 require "./darwin/descriptors"

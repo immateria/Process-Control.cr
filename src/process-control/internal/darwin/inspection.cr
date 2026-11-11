@@ -1,4 +1,4 @@
-require "./kernel/process"
+require "./context"
 
 module ProcessControl::Internal::Darwin::Inspection
   # Process states from SDK sys/proc.h.
@@ -11,7 +11,7 @@ module ProcessControl::Internal::Darwin::Inspection
   def self.snapshot(limit : Int32) : ProcessControl::Inspection::Snapshot
     # Allow for PID zero and one additional positive PID to detect truncation.
     pids = Slice(Int32).new(limit + 2)
-    result = Kernel::Process.list(pids.to_unsafe.as(Void*), pids.bytesize.to_i32)
+    result = ::Native::Kernel::Darwin::Process.list(pids.to_unsafe.as(Void*), pids.bytesize.to_i32)
     bytes = result.primary
     if result.error != 0 || bytes <= 0
       diagnostic = native_diagnostic("enumerate", result.error)
@@ -38,14 +38,14 @@ module ProcessControl::Internal::Darwin::Inspection
   end
 
   private def self.sample(pid : Int32) : ProcessControl::Observation
-    info = LibProc::Record.new
-    result = Kernel::Process.info(pid, LibProc::PIDT_BSDINFOWITHUNIQID, 1_u64, pointerof(info).as(Void*), sizeof(LibProc::Record))
+    info = ::Native::Kernel::Darwin::Process::Info::Record.new
+    result = ::Native::Kernel::Darwin::Process.info(pid, ::Native::Kernel::Darwin::Process::Info::PIDT_BSDINFOWITHUNIQID, 1_u64, pointerof(info).as(Void*), sizeof(::Native::Kernel::Darwin::Process::Info::Record))
     bytes = result.primary
     if result.error != 0 || bytes == 0
       diagnostic = native_diagnostic("sample", result.error)
       return Observation.new(Identity.new(pid), diagnostic: diagnostic)
     end
-    unless bytes == sizeof(LibProc::Record) && info.bsd.pid == pid.to_u32
+    unless bytes == sizeof(::Native::Kernel::Darwin::Process::Info::Record) && info.bsd.pid == pid.to_u32
       diagnostic = Diagnostic.new("inspection.snapshot", "Darwin process record has an unexpected native identity or size", stage: "sample")
       return Observation.new(Identity.new(pid), diagnostic: diagnostic)
     end
@@ -72,9 +72,9 @@ module ProcessControl::Internal::Darwin::Inspection
   end
 
   def self.zombie?(pid : Int32) : Bool
-    info = LibProc::Short.new
+    info = ::Native::Kernel::Darwin::Process::Info::Short.new
     # A nonzero argument asks XNU to include an unreaped zombie.
-    result = Kernel::Process.info(pid, LibProc::PIDT_SHORTBSDINFO, 1_u64, pointerof(info).as(Void*), sizeof(LibProc::Short))
-    result.error == 0 && result.primary == sizeof(LibProc::Short) && info.pid == pid.to_u32 && info.status == ZOMBIE
+    result = ::Native::Kernel::Darwin::Process.info(pid, ::Native::Kernel::Darwin::Process::Info::PIDT_SHORTBSDINFO, 1_u64, pointerof(info).as(Void*), sizeof(::Native::Kernel::Darwin::Process::Info::Short))
+    result.error == 0 && result.primary == sizeof(::Native::Kernel::Darwin::Process::Info::Short) && info.pid == pid.to_u32 && info.status == ZOMBIE
   end
 end

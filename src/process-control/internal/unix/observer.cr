@@ -15,7 +15,7 @@ module ProcessControl::Internal::Unix
         end
       {% end %}
       {% if flag?(:darwin) %}
-        result = Internal::Darwin::Kernel.call(37, pid.to_u64!, 0_u64)
+        result = ::Native::Kernel::Darwin::Signal.kill(pid.to_i32, 0)
         code = result.error
       {% else %}
         code = LibC.kill(pid.to_i32, 0) == 0 ? 0 : Errno.value.value

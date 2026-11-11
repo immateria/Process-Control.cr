@@ -4,6 +4,7 @@ require "json"
 require "random/secure"
 require "set"
 require "./helper/runtime"
+require "../src/process-control/platform/unix/helper"
 
 {% unless flag?(:darwin) %}
   {% raise "Native Darwin qualification requires macOS." %}
@@ -34,6 +35,11 @@ inputs.sort!.uniq!
 sources = inputs.to_h do |name|
   {name, Digest::SHA256.hexdigest(File.read(File.join(root, name)))}
 end
+ProcessControl::Platform::Unix::Helper.verify_sources!
+dependency_sources = Native::Kernel::Source::FILES.to_h do |name, bytes|
+  {name, Digest::SHA256.hexdigest(bytes)}
+end
+compiler_environment = ProcessControl::Platform::Unix::Helper.compiler_environment(compiler)
 artifacts = {} of String => Hash(String, String)
 fixtures = %w(darwin-reuse darwin-interruption)
 fixtures.each do |name|
@@ -45,7 +51,7 @@ fixtures.each do |name|
     flags << "-O0"
   {% end %}
   flags.concat([source, "-o", development])
-  environment = {"CRYSTAL_CACHE_DIR" => File.join(destination, "compiler")}
+  environment = compiler_environment.merge({"CRYSTAL_CACHE_DIR" => File.join(destination, "compiler")})
   File.open(output + ".build.log", "w") do |log|
     unless Process.run(compiler, flags, env: environment, output: log, error: log).success?
       abort "Development compilation failed. See #{output}.build.log"
@@ -83,17 +89,18 @@ fixtures.each do |name|
   puts "Audited development and release #{name}"
 end
 File.write(File.join(destination, "manifest.json"), {
-  "compiler"  => Crystal::DESCRIPTION,
-  "sources"   => sources,
-  "artifacts" => artifacts,
+  "compiler"           => Crystal::DESCRIPTION,
+  "sources"            => sources,
+  "dependency_sources" => dependency_sources,
+  "artifacts"          => artifacts,
 }.to_json)
 
-environment = {
+environment = compiler_environment.merge({
   "PROCESS_CONTROL_DARWIN_QUALIFICATION"        => "1",
   "PROCESS_CONTROL_DARWIN_REUSE_FIXTURE"        => File.join(destination, "darwin-reuse"),
   "PROCESS_CONTROL_DARWIN_INTERRUPTION_FIXTURE" => File.join(destination, "darwin-interruption"),
   "CRYSTAL_CACHE_DIR"                           => File.join(destination, "spec-compiler"),
-}
+})
 log_path = File.join(destination, "runtime.log")
 passed = File.open(log_path, "w") do |log|
   Process.run(compiler,
@@ -107,3 +114,9 @@ sources.each do |name, digest|
     abort "Qualification input changed during the run: #{name}"
   end
 end
+dependency_sources.each do |name, digest|
+  unless Digest::SHA256.hexdigest(File.read(File.join(Native::Kernel::Source.root, name))) == digest
+    abort "Qualification dependency input changed during the run: #{name}"
+  end
+end
+ProcessControl::Platform::Unix::Helper.verify_sources!

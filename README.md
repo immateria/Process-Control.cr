@@ -1,13 +1,16 @@
 # Process-Control
 
 Process ownership, launch, control and status collection for Crystal applications.
-The shard has no runtime shard dependencies. The [support matrix](docs/support.md)
+The shard depends on `native-kernel` (`immateria/Native-Kernel.cr`) for reusable
+Darwin kernel ABI primitives. Process identity, checked authority, helper protocol
+and target collection stay here. The [support matrix](docs/support.md)
 records which profiles have run natively.
 
 Crystal 1.10.0 or newer and its native linker are required. Build the Unix
 target-owner helper explicitly:
 
 ```sh
+shards install
 crystal run scripts/build-helper.cr
 make check
 ```
@@ -23,16 +26,20 @@ direct kernel traps, and its linked executable must have no undefined imports.
 Apple's linker still requires a libSystem loader entry. The Linux helper calls
 C-ABI system interfaces. Neither helper uses handwritten C or a separate C
 compilation. Cache keys include all helper/build/audit sources, the compiler
-description and architecture/OS profile.
+description and architecture/OS profile, plus the actual Native-Kernel source
+bytes and approved assembly metadata. The builder uses the installed dependency
+when it compiles from an external build directory.
 
 The managed Crystal application still uses platform libraries for its runtime
 and ordinary I/O. On Darwin, the shard's process launch, inspection and checked
-control entry calls use BSD syscalls and Mach traps directly. Helper launch uses
-a private spawn ABI gated to Darwin 24 (macOS 15); task messages require macOS 13
+control entry calls use Native-Kernel's direct BSD syscall and Mach primitives.
+Its raw profile supports Darwin ARM64/x86-64; dependency source/audit metadata
+remains requireable on Linux and Windows. Helper launch uses
+a private spawn ABI gated to Darwin 24/25 (macOS 15/26); task messages require macOS 13
 or later, and audit-token signaling requires macOS 15 or later. Other Darwin
 releases need their own ABI audit and native qualification. See the
-[rewrite record](docs/support.md#direct-darwin-rewrite-on-2026-11-10) for the
-current verification state.
+[macOS profile](docs/macos.md) for the audited layouts, full consumer CI and
+qualification limits.
 
 To select a compiler:
 

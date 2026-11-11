@@ -1,0 +1,106 @@
+name: Native macOS process qualification
+
+on:
+  push:
+    branches: [ci/macos-process-next]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: process-control-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: '1'
+  HOMEBREW_NO_INSTALL_CLEANUP: '1'
+
+jobs:
+  native:
+    if: ${{ github.event.repository.visibility == 'public' }}
+    name: ${{ matrix.profile }} / Crystal ${{ matrix.compiler }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        compiler: ['1.10.0', '1.22.2']
+        profile: [macos-15-arm64, macos-15-x86_64, macos-26-arm64, macos-26-x86_64]
+        include:
+          - profile: macos-15-arm64
+            runner: macos-15
+            arch: aarch64
+          - profile: macos-15-x86_64
+            runner: macos-15-intel
+            arch: x86_64
+          - profile: macos-26-arm64
+            runner: macos-26
+            arch: aarch64
+          - profile: macos-26-x86_64
+            runner: macos-26-intel
+            arch: x86_64
+    env:
+      PC_OUTPUT: /tmp/process-control-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.profile }}-${{ matrix.compiler }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          path: process-control
+          persist-credentials: false
+      - name: Require the reviewed Native-Kernel commit
+        id: dependency
+        timeout-minutes: 1
+        shell: bash
+        run: python3 -B process-control/scripts/ci/macos.py dependency --output "$GITHUB_OUTPUT"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: ${{ steps.dependency.outputs.repository }}
+          ref: ${{ steps.dependency.outputs.ref }}
+          path: native-kernel
+          persist-credentials: false
+      - name: Install selected native dependencies
+        timeout-minutes: 8
+        shell: bash
+        run: python3 -B process-control/scripts/ci/macos.py setup dependencies --profile '${{ matrix.profile }}' --compiler-version '${{ matrix.compiler }}' --output "$PC_OUTPUT"
+      - name: Install exact Crystal release
+        timeout-minutes: 8
+        uses: crystal-lang/install-crystal@36a22e9145188eec527c96e5a789ce4b832af587 # v1
+        with:
+          crystal: ${{ matrix.compiler }}
+          arch: ${{ matrix.arch }}
+          shards: false
+      - name: Verify selected compiler and native architecture
+        timeout-minutes: 2
+        shell: bash
+        run: |
+          export PKG_CONFIG_PATH="${PKG_CONFIG_LIBDIR:?missing selected dependency path}"
+          printf 'PKG_CONFIG_PATH=%s\n' "$PKG_CONFIG_PATH" >> "$GITHUB_ENV"
+          python3 -B process-control/scripts/ci/macos.py setup verify --profile '${{ matrix.profile }}' --compiler-version '${{ matrix.compiler }}' --output "$PC_OUTPUT"
+      - name: Qualify complete process lifecycle suite
+        timeout-minutes: 20
+        shell: bash
+        run: python3 -B process-control/scripts/ci/macos.py qualify --compiler crystal --compiler-version '${{ matrix.compiler }}' --profile '${{ matrix.profile }}' --output "$PC_OUTPUT"
+      - name: Preserve non-passing setup receipt
+        if: always()
+        timeout-minutes: 1
+        shell: bash
+        run: |
+          if [[ ! -f "$PC_OUTPUT/export/receipt.json" ]]; then
+            if [[ -f process-control/scripts/ci/macos.py ]]; then
+              python3 -B process-control/scripts/ci/macos.py record-failure --profile '${{ matrix.profile }}' --output "$PC_OUTPUT" --reason 'Workflow stopped before qualification produced a receipt'
+            else
+              mkdir -p "$PC_OUTPUT/export"
+              python3 -c 'import json,os,pathlib; p=pathlib.Path(os.environ["PC_OUTPUT"])/"export/receipt.json"; p.write_text(json.dumps({"schema":1,"status":"incomplete","error":"Checkout did not provide the consumer driver","profile":"${{ matrix.profile }}","source_sha":"${{ github.sha }}"})+"\n")'
+              exit 1
+            fi
+          fi
+      - name: Retain bounded qualification evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: process-${{ matrix.profile }}-crystal-${{ matrix.compiler }}
+          path: ${{ env.PC_OUTPUT }}/export/
+          retention-days: 3
+          compression-level: 9
+          if-no-files-found: error

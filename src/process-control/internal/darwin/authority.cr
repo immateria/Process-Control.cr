@@ -209,7 +209,7 @@ module ProcessControl::Internal::Darwin
 
     def self.mach_error(operation : String, stage : String, code : Int32) : ProcessControl::Error
       diagnostic = Diagnostic.new(operation, "Mach operation failed", native_domain: "kern_return_t", native_code: code.to_i64, stage: stage)
-      if code == ABI::KERN_PROTECTION_FAILURE || code == ABI::KERN_NO_ACCESS
+      if code == ::Native::Kernel::Darwin::ABI::KERN_PROTECTION_FAILURE || code == ::Native::Kernel::Darwin::ABI::KERN_NO_ACCESS
         Error::Access::Denied.new("Mach reference access denied", diagnostic)
       else
         Observation::Failed.new("Mach reference operation failed", diagnostic)

@@ -2,3 +2,7 @@ name: process-control
 version: 0.1.0-preview.1
 crystal: ">= 1.10.0"
 license: MIT
+dependencies:
+  native-kernel:
+    github: immateria/Native-Kernel.cr
+    version: ">= 0.1.0-preview.1"
