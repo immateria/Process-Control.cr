@@ -102,4 +102,12 @@ module ProcessControl::Internal::Unix::Owner
     return -1 unless frame.text(verb) && frame.text(token) && frame.text(" ".to_unsafe) && frame.integer(value) && frame.text("\n".to_unsafe)
     send_line(fd, bytes.to_unsafe)
   end
+
+  def self.report_exit(fd : Int32, token : UInt8*, status : Int32) : Int32
+    bytes = uninitialized UInt8[192]
+    frame = Frame.new(bytes.to_unsafe, 192)
+    return -1 unless frame.text("EXIT ".to_unsafe) && frame.text(token) && frame.text(" ".to_unsafe) &&
+                     frame.integer(status.to_u32!.to_u64) && frame.text(" NONE\n".to_unsafe)
+    send_line(fd, bytes.to_unsafe)
+  end
 end

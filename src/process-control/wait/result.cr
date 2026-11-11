@@ -38,17 +38,18 @@ module ProcessControl::Wait
       getter code : UInt32?
       getter signal : Int32?
       getter core_dumped : Bool?
+      getter usage : Resource::Usage?
 
-      def initialize(@domain, @raw, @reason, @code = nil, @signal = nil, @core_dumped = nil)
+      def initialize(@domain, @raw, @reason, @code = nil, @signal = nil, @core_dumped = nil, @usage = nil)
       end
 
-      def self.posix(raw : Int32) : self
+      def self.posix(raw : Int32, *, usage : Resource::Usage? = nil) : self
         bits = raw.to_u32!
         signal = raw & 0x7f
         if signal == 0
-          new(Domain::Posix, bits, Reason::Exited, ((raw >> 8) & 0xff).to_u32)
+          new(Domain::Posix, bits, Reason::Exited, ((raw >> 8) & 0xff).to_u32, usage: usage)
         elsif signal != 0x7f
-          new(Domain::Posix, bits, Reason::Signaled, signal: signal, core_dumped: (raw & 0x80) != 0)
+          new(Domain::Posix, bits, Reason::Signaled, signal: signal, core_dumped: (raw & 0x80) != 0, usage: usage)
         else
           new(Domain::Posix, bits, Reason::Unknown)
         end

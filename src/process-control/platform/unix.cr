@@ -30,7 +30,7 @@ module ProcessControl::Platform::Unix
 
     def self.capabilities : Capability::Snapshot
       operations = %w(handle.observe wait.exit control.stop control.kill control.signal control.suspend control.resume)
-      Capability::Snapshot.new(operations.map { |name| Capability::Operation.new(name) }, :delegated, "unix-helper-v1")
+      Capability::Snapshot.new(operations.map { |name| Capability::Operation.new(name) }, :delegated, "unix-helper-v2")
     end
 
     def launch(plan : Spawn::Plan, *, deadline : Wait::Deadline, cancel : Wait::Cancellation?) : Spawn::Attempt::Result

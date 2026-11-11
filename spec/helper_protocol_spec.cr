@@ -2,6 +2,19 @@ require "./spec_helper"
 
 {% if flag?(:darwin) || (flag?(:linux) && !flag?(:android)) %}
   module Fixture
+    def self.protocol_exit(socket : UNIXSocket, token : String, raw : UInt32) : Nil
+      line = socket.gets.not_nil!
+      parts = line.split
+      parts[0, 3].should eq(["EXIT", token, raw.to_s])
+      info = PC::Internal::Unix::Protocol.exit(parts)
+      info.raw.should eq(raw)
+      {% if flag?(:darwin) %}
+        info.usage.not_nil!.max_rss_bytes.should be > 0
+      {% else %}
+        info.usage.should be_nil
+      {% end %}
+    end
+
     def self.protocol(script : String, &block : UNIXSocket, String ->) : Process::Status
       directory = "/tmp/process-control-protocol-#{Random::Secure.hex(10)}"
       Dir.mkdir(directory, 0o700)
@@ -18,7 +31,7 @@ require "./spec_helper"
         socket = server.accept
         socket.read_timeout = 5.seconds
         greeting = socket.gets.not_nil!.split
-        greeting[0, 3].should eq(["HELLO", "1", token])
+        greeting[0, 3].should eq(["HELLO", "2", token])
         socket << "START #{token}\n"
         socket.flush
         socket.gets.not_nil!.should start_with("STARTED #{token} ")
@@ -57,7 +70,7 @@ require "./spec_helper"
           socket.flush
           socket.gets.should eq("ACK #{token} #{sequence} 0")
         end
-        socket.gets.should eq("EXIT #{token} 9472")
+        Fixture.protocol_exit(socket, token, 9472_u32)
       end
     end
 
@@ -66,7 +79,7 @@ require "./spec_helper"
         socket << "SIGNAL wrong-token 1 9\nSIGNAL #{token} 2 #{Signal::CONT.value}\n"
         socket.flush
         socket.gets.should eq("ACK #{token} 2 0")
-        socket.gets.should eq("EXIT #{token} 9472")
+        Fixture.protocol_exit(socket, token, 9472_u32)
       end
     end
 
@@ -86,7 +99,7 @@ require "./spec_helper"
 
     it "keeps a real exit 127 distinct from native exec failure" do
       Fixture.protocol("exit 127") do |socket, token|
-        socket.gets.should eq("EXIT #{token} 32512")
+        Fixture.protocol_exit(socket, token, 32512_u32)
       end
     end
 

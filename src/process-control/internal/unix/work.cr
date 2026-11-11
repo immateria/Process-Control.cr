@@ -57,7 +57,7 @@ module ProcessControl::Internal::Unix
         socket = server.accept
         socket.read_timeout = @launcher.startup_timeout
         greeting = socket.gets(limit: 192, chomp: true).try(&.split)
-        unless greeting && greeting.size == 5 && greeting[0] == "HELLO" && greeting[1] == "1" && greeting[2] == token
+        unless greeting && greeting.size == 5 && greeting[0] == "HELLO" && greeting[1] == "2" && greeting[2] == token
           raise Observation::Failed.new("invalid native helper handshake")
         end
         signal_limit = greeting[3].to_i32

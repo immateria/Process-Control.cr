@@ -21,7 +21,7 @@ module ProcessControl::Internal::Unix::Owner
 
     line = uninitialized UInt8[192]
     hello = Frame.new(line.to_unsafe, 192)
-    return 69 unless hello.text("HELLO 1 ".to_unsafe) && hello.text(argv[2]) && hello.text(" ".to_unsafe) &&
+    return 69 unless hello.text("HELLO 2 ".to_unsafe) && hello.text(argv[2]) && hello.text(" ".to_unsafe) &&
                      hello.integer(SIGNALS.to_u64!) && hello.text(" ".to_unsafe) &&
                      hello.integer(DUPLICATE.to_u64!) && hello.text("\n".to_unsafe)
     return 70 if send_line(connection, line.to_unsafe) < 0
@@ -92,7 +92,7 @@ module ProcessControl::Internal::Unix::Owner
       collected = LibC.waitpid(target, pointerof(status), connected ? LibC::WNOHANG : 0)
       next if collected < 0 && Errno.value == Errno::EINTR
       if collected == target
-        report(connection, "EXIT ".to_unsafe, argv[2], status.to_u32!.to_u64) if connected
+        report_exit(connection, argv[2], status) if connected
         return 0
       end
       if collected < 0

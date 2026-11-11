@@ -141,6 +141,23 @@ failure and shares it across waiters. Timeout and cancellation affect an individ
 wait. Status waiting continues after child close. Output EOF and target exit are
 separate; a descendant may keep output open after the target exits.
 
+On Darwin, `Wait::Exit::Info#usage` carries the `Resource::Usage` collected by
+the helper's successful terminal `wait4`. Its domain is `darwin.wait4`.
+`user` and `system` retain seconds and microseconds; `to_span` converts either
+to `Time::Span`. `max_rss_bytes` is peak resident memory in bytes. All 14 native
+counters are preserved, with the peak exposed under
+that explicit unit name. The counters retain Darwin's implementation-defined
+meaning; a zero in an unmaintained counter is not evidence of no activity.
+
+The kernel includes usage from descendants already collected into the target's
+cumulative child accounting. Times and counters are added; peak resident memory
+uses the maximum. This is neither a whole-descendant-tree total nor a live PID
+snapshot. It excludes the helper's own usage. Repeated waits return the same
+cached status and usage, including after child close. Other status producers,
+including the Linux helper, leave `usage` nil. Nil means unavailable, not zero.
+An accounting frame failure is a collection failure; incomplete data is never
+published as a successful terminal result.
+
 The Unix backend launches a native helper with an authenticated private socket.
 The helper is written in Crystal, with a custom `main` and no managed runtime
 startup. An explicit build audits both unoptimized and release LLVM, following
@@ -243,3 +260,17 @@ Protocol sequence values are unsigned 64-bit decimal integers. Malformed or
 overflowing numeric fields close the control channel without delivering control;
 the helper continues collecting its target. A reported target exit 127 remains
 distinct from an exec/setup error reported through the close-on-exec error pipe.
+
+The current helper protocol is version 2. Its terminal records are:
+
+```text
+EXIT token raw-status NONE
+EXIT token raw-status DARWIN user-sec user-usec system-sec system-usec max-rss shared-memory data-memory stack-memory reclaims faults swaps input-blocks output-blocks sent received signals voluntary-switches involuntary-switches
+```
+
+Each record ends with a newline and includes the authenticated session token.
+The receiver bounds a frame to 512 bytes, validates its complete field count,
+unsigned decimal values, UInt32 status, Int64 accounting range and microsecond
+fractions below one million, and requires a terminal status. Truncation, unknown
+profiles, extra fields and numeric overflow fail collection. `NONE` explicitly
+records absent accounting. A version-1 helper is rejected during startup.

@@ -11,6 +11,7 @@ the lab's evidence. Test receipts for the shard live outside the repository.
 | Immutable command and registration/pending ownership               | Implemented                                                            | Core/provider tests and Unix launch                                                                     |
 | Target launch, stop, kill, signals, suspend/resume                 | Crystal helper; direct Darwin bootstrap and target operations          | Darwin 24/25 admission and Linux; see macOS qualification below                               |
 | Unix target setup                                                  | Session and finite POSIX limits                                        | macOS and Linux                                                                                         |
+| Terminal child accounting                                         | Darwin `wait4` usage cached with target status                          | macOS 15.4.1 local execution; see accounting qualification below                                         |
 | Native pipe endpoints and bounded binary capture                   | Implemented                                                            | Unix native tests and Windows code generation                                                           |
 | Existing-process observation                                       | Unix point query; Darwin Mach reference observation                    | Darwin sampled queries can identify a present zombie, and checked acquisition adds PID-version evidence |
 | Existing-process checked control                                   | Direct Darwin audit-token signaling                                    | macOS 15 or later by source guard; measured on macOS 15.4.1 ARM64 and Rosetta x86-64                      |
@@ -365,3 +366,33 @@ is qualified only by a passing source-bound receipt. Historical counts above
 remain evidence for their original revisions. PID reuse/interruption, foreign
 credentials and protected-target behavior retain their separately recorded
 scope; the ordinary CI suite does not imply those qualifications.
+
+## Terminal accounting checks on 2026-11-11
+
+On macOS 15.4.1 (Darwin 24.4.0), Crystal 1.22.2 and 1.10.0 each pass 128
+examples on ARM64 and under Rosetta x86-64. All four helper builds pass the
+development/release LLVM audits and have empty undefined-import tables. Each
+receipt binds the twenty installed Native-Kernel sources and the actual helper
+artifacts. This is local translated Intel evidence, not a new hosted Intel or
+macOS 26 run.
+
+The corrected Native-Kernel x86 flags clobber is included in all four final
+consumer profiles. Linux ARM64 with Crystal 1.22.2 passes 94 examples in an
+isolated copy with pidfd required, including the version-2 protocol's explicit
+absent-accounting record. Delegated cgroup and PID-reuse cases were not selected
+for that regression run. The current compiler also builds the complete specs
+on all eight cross targets; those are type checks without native execution.
+
+The added cases cover terminal memory/CPU usage, signal death, accounting after
+child close, repeated waits, all native counter fields and full-width values.
+Malformed, partial and oversized protocol receipts fail collection. Darwin
+accounting is available through `Wait::Exit::Info#usage`; other status producers
+leave it nil. See the [accounting contract](contracts.md#child-ownership) for
+units and the contribution of descendants already collected by the target.
+
+Receipts are external under `macos-accounting-20261111/parent-final-consumer-*` in the
+workspace's test cache. Earlier hosted receipts retain their original source
+scope. The consumer CI dependency pin now names Native-Kernel
+`1e8b43aba937395d3f929352d6c5985927ac3261`, including the corrected flags clobber.
+The `ci/macos-accounting` branch triggers the eight native macOS 15/26 consumer
+cells. A published commit and queued workflow alone do not qualify those hosts.

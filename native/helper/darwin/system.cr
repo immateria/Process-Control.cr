@@ -47,6 +47,10 @@ module ProcessControl::Internal::Unix::Owner::System
     value(Native::Process.waitpid(pid, status, options)).to_i32!
   end
 
+  def self.wait4(pid : Int32, status : Int32*, options : Int32, usage : Native::Resource::Usage*) : Int32
+    value(Native::Process.wait4(pid, status, options, usage)).to_i32!
+  end
+
   def self.kill(pid : Int32, signal : Int32) : Int32
     value(Native::Signal.kill(pid, signal)).to_i32!
   end

@@ -1,3 +1,5 @@
+require "./protocol"
+
 module ProcessControl::Internal::Unix
   class Session
     getter source : Spawn::Status::Source
@@ -65,7 +67,7 @@ module ProcessControl::Internal::Unix
       if terminal = @source.latest
         @permit.send(nil)
         if terminal.info && (request.is_a?(Control::Stop::Request) || request.is_a?(Control::Kill::Request))
-          return Control::Result.new(request, @identity, Control::Satisfied.new(observe), "unix-helper-v1", :confirmed)
+          return Control::Result.new(request, @identity, Control::Satisfied.new(observe), "unix-helper-v2", :confirmed)
         end
         return refused(request, Error::Missing.new("target is terminated or collection failed"))
       end
@@ -73,7 +75,7 @@ module ProcessControl::Internal::Unix
         @permit.send(nil)
         return refused(request, Error::Closed.new("control transport unavailable or budget ended"))
       end
-      pending = Control::Pending.new(request, @identity, "unix-helper-v1")
+      pending = Control::Pending.new(request, @identity, "unix-helper-v2")
       sequence = @mutex.synchronize do
         @sequence += 1
         @operations[@sequence] = pending
@@ -90,11 +92,12 @@ module ProcessControl::Internal::Unix
     end
 
     private def refused(request : Control::Request, reason : ProcessControl::Error) : Control::Result
-      Control::Result.new(request, @identity, Control::Refused.new(reason), "unix-helper-v1")
+      Control::Result.new(request, @identity, Control::Refused.new(reason), "unix-helper-v2")
     end
 
     private def receive : Nil
-      while line = @socket.gets(limit: 192, chomp: true)
+      while line = @socket.gets(limit: Protocol::FRAME_LIMIT, chomp: false)
+        raise Observation::Failed.new("incomplete native protocol frame") unless line.ends_with?('\n')
         parts = line.split
         unless parts.size >= 3 && parts[1] == @token
           raise Error::Context::Mismatch.new("native protocol identity mismatch")
@@ -112,11 +115,10 @@ module ProcessControl::Internal::Unix
                         else
                           Control::Report::Failure.new(Diagnostic.new(request.operation, "native signal failed", native_domain: "errno", native_code: code.to_i64))
                         end
-          pending.publish(Control::Result.new(request, @identity, disposition, "unix-helper-v1"))
+          pending.publish(Control::Result.new(request, @identity, disposition, "unix-helper-v2"))
           @permit.send(nil)
         when "EXIT"
-          raise Observation::Failed.new("malformed exit receipt") unless parts.size == 3
-          @source.publish(Wait::Exit::Info.posix(parts[2].to_u32.to_i32!))
+          @source.publish(Protocol.exit(parts))
         when "FAILED"
           raise Observation::Failed.new("native collector failed: errno #{parts[2]}")
         else
@@ -142,7 +144,7 @@ module ProcessControl::Internal::Unix
       end
       operations.each do |pending|
         diagnostic = Diagnostic.new(pending.request.operation, error.message || error.class.name, stage: "receipt")
-        pending.publish(Control::Result.new(pending.request, @identity, Control::Delivery::Unknown.new(diagnostic), "unix-helper-v1", :unknown))
+        pending.publish(Control::Result.new(pending.request, @identity, Control::Delivery::Unknown.new(diagnostic), "unix-helper-v2", :unknown))
         @permit.send(nil)
       end
     end

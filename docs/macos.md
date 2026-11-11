@@ -35,6 +35,21 @@ SID and PGID equal its PID, then releases and collects it through its owner.
 This does not add a native group controller, a stable group identity or a
 descendant-containment guarantee.
 
+## Terminal accounting
+
+The helper collects the target with Native-Kernel's full `wait4` entry. Its
+version-2 terminal frame carries the returned CPU times and all native usage
+counters beside the target status. `Wait::Exit::Info#usage` exposes the immutable
+result, with CPU time in seconds/microseconds and peak RSS in bytes. The
+[contract](contracts.md#child-ownership) records cumulative-child scope, missing
+accounting and frame validation. No live PID query participates in collection.
+
+The integration fixtures cover normal exit with a bounded 16 MiB allocation,
+signal death, collection after close, repeated waits and full-width counters.
+Protocol fixtures reject incomplete, oversized, malformed and nonterminal
+records. This batch does not change Darwin release admission or qualify the
+new operations from the earlier hosted receipts.
+
 ## Qualification
 
 The source audit read Apple XNU Darwin 24 `xnu-11417.101.15` and Darwin 25

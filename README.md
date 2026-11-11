@@ -107,6 +107,11 @@ On Unix, add `Spawn::Session.new` to a command for a new session or
 `Resource::Limit.new(:file, 1024)` for a 1,024-byte file-size limit.
 The helper applies both before exec.
 
+On macOS, a collected child's `Wait::Exit::Info#usage` includes CPU times and
+peak resident memory in bytes, from the same `wait4` call as its status.
+Other status sources leave accounting nil. See the [accounting scope and
+units](docs/contracts.md#child-ownership), including already-collected descendants.
+
 On Linux, `Platform::Linux::Cgroup.open(path)` opens a delegated cgroup v2
 directory. Its group places targets at creation with `clone3(CLONE_INTO_CGROUP)`.
 Population, target exit status and directory lifetime are independent. The

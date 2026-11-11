@@ -11,7 +11,7 @@ module ProcessControl::Internal::Unix::Owner
 
     line = uninitialized UInt8[192]
     hello = Frame.new(line.to_unsafe, 192)
-    return 69 unless hello.text("HELLO 1 ".to_unsafe) && hello.text(argv[2]) && hello.text(" ".to_unsafe) &&
+    return 69 unless hello.text("HELLO 2 ".to_unsafe) && hello.text(argv[2]) && hello.text(" ".to_unsafe) &&
                      hello.integer(SIGNALS.to_u64!) && hello.text(" ".to_unsafe) &&
                      hello.integer(DUPLICATE.to_u64!) && hello.text("\n".to_unsafe)
     return 70 if send_line(connection, line.to_unsafe) < 0
@@ -68,10 +68,11 @@ module ProcessControl::Internal::Unix::Owner
     connected = report(connection, "STARTED ".to_unsafe, argv[2], target.to_u64!) == 0
     loop do
       status = 0
-      collected = System.waitpid(target, pointerof(status), connected ? 1 : 0)
+      usage = uninitialized System::Native::Resource::Usage
+      collected = System.wait4(target, pointerof(status), connected ? 1 : 0, pointerof(usage))
       next if collected == -4
       if collected == target
-        report(connection, "EXIT ".to_unsafe, argv[2], status.to_u32!.to_u64) if connected
+        report_exit(connection, argv[2], status, pointerof(usage)) if connected
         return 0
       end
       if collected < 0

@@ -2,7 +2,7 @@ name: Native macOS process qualification
 
 on:
   push:
-    branches: [ci/macos-process-next]
+    branches: [ci/macos-process-next, ci/macos-accounting]
   workflow_dispatch:
 
 permissions:
